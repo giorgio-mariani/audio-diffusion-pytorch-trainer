@@ -5,14 +5,8 @@
 (Optional) Create virtual environment and activate it
 
 ```bash
-python3 -m venv venv
-
-source venv/bin/activate
-```
-Install requirements
-
-```bash
-pip install -r requirements.txt
+conda env create -f env.yaml
+conda activate audio-diffusion-trainer
 ```
 
 Add environment variables, rename `.env.tmp` to `.env` and replace with your own variables (example values are random)
