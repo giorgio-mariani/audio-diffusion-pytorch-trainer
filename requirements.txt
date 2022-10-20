@@ -15,7 +15,7 @@ librosa
 transformers
 eng-to-ipa
 
-audio-diffusion-pytorch
+audio-diffusion-pytorch==0.0.43
 audio-data-pytorch
 quantizer-pytorch
 difformer-pytorch
