@@ -50,6 +50,42 @@ class Model(pl.LightningModule):
 
 """ Datamodule """
 
+class DatamoduleWithValidation(pl.LightningDataModule):
+    def __init__(
+        self,
+        train_dataset,
+        val_dataset,
+        *,
+        batch_size: int,
+        num_workers: int,
+        pin_memory: bool = False,
+        **kwargs: int,
+    ) -> None:
+        super().__init__()
+        self.data_train = train_dataset
+        self.data_val = val_dataset
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(
+            dataset=self.data_train,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            shuffle=True,
+        )
+
+    def val_dataloader(self) -> DataLoader:
+        return DataLoader(
+            dataset=self.data_val,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            shuffle=True,
+        )
+
 
 class Datamodule(pl.LightningDataModule):
     def __init__(
