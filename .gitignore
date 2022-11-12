@@ -9,3 +9,4 @@ venv/
 logs/
 data/
 train.log
+.idea/
