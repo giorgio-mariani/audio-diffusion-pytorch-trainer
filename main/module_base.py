@@ -1,4 +1,5 @@
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Sequence
+import audio_data_pytorch
 
 import pytorch_lightning as pl
 import torch
@@ -86,7 +87,6 @@ class DatamoduleWithValidation(pl.LightningDataModule):
             shuffle=True,
         )
 
-
 class Datamodule(pl.LightningDataModule):
     def __init__(
         self,
@@ -158,6 +158,7 @@ class SampleLogger(Callback):
         sampling_steps: List[int],
         diffusion_schedule: Schedule,
         diffusion_sampler: Sampler,
+        stems: List[str]
     ) -> None:
         self.num_items = num_items
         self.channels = channels
@@ -166,7 +167,7 @@ class SampleLogger(Callback):
         self.sampling_steps = sampling_steps
         self.diffusion_schedule = diffusion_schedule
         self.diffusion_sampler = diffusion_sampler
-
+        self.stems = stems
         self.log_next = False
 
     def on_validation_epoch_start(self, trainer, pl_module):
@@ -194,7 +195,6 @@ class SampleLogger(Callback):
         )
 
         for steps in self.sampling_steps:
-
             samples = model.sample(
                 noise=noise,
                 sampler=self.diffusion_sampler,
@@ -203,16 +203,15 @@ class SampleLogger(Callback):
             )
             samples = rearrange(samples, "b c t -> b t c").detach().cpu().numpy()
 
-            wandb_logger.log(
-                {
-                    f"sample_{idx}_{steps}": wandb.Audio(
-                        samples[idx],
-                        caption=f"Sampled in {steps} steps",
-                        sample_rate=self.sampling_rate,
-                    )
-                    for idx in range(self.num_items)
-                }
+            for i in range(samples.shape[-1]):
+                wandb_logger.log(
+                 {
+                     f"sample_{self.stems[i]}_{idx}_{steps}": wandb.Audio(
+                            samples[idx, :, i].unsqueeze(-1),
+                            caption=f"Sampled in {steps} steps",
+                            sample_rate=self.sampling_rate,
+                     ) for idx in range(self.num_items)
+                    }
             )
-
         if is_train:
             pl_module.train()
