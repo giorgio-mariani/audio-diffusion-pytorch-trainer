@@ -1,3 +1,4 @@
+import numpy as np
 from typing import Any, Callable, List, Optional, Sequence
 import audio_data_pytorch
 
@@ -12,7 +13,6 @@ from pytorch_lightning.loggers import LoggerCollection, WandbLogger
 from torch.utils.data import DataLoader
 
 """ Model """
-
 
 class Model(pl.LightningModule):
     def __init__(
@@ -207,7 +207,7 @@ class SampleLogger(Callback):
                 wandb_logger.log(
                  {
                      f"sample_{self.stems[i]}_{idx}_{steps}": wandb.Audio(
-                            samples[idx, :, i].unsqueeze(-1),
+                            samples[idx, :, i][..., np.newaxis],
                             caption=f"Sampled in {steps} steps",
                             sample_rate=self.sampling_rate,
                      ) for idx in range(self.num_items)

@@ -3,9 +3,9 @@
 # Test with length 65536, batch size 4, logger sampling_steps [3]
 
 sampling_rate: 22050
-length: 220500
+length: 262144
 channels: 1
-min_duration: 10.1
+min_duration: 12.0
 max_duration: 640.0
 aug_shift: True
 log_every_n_steps: 2000
@@ -44,7 +44,7 @@ datamodule:
   _target_: main.module_base.DatamoduleWithValidation
   train_dataset:
     _target_: main.data.SupervisedSLAKHDataset
-    path: /home/emilian/DataspellProjects/audio-diffusion-pytorch-trainer/data/SLAKH2000_super/train
+    audio_files_dir: /home/emilian/DataspellProjects/audio-diffusion-pytorch-trainer/data/SLAKH2000_super/train
     sr: ${sampling_rate}
     channels: ${channels}
     min_duration: ${min_duration}
@@ -56,7 +56,7 @@ datamodule:
 
   val_dataset:
     _target_: main.data.SupervisedSLAKHDataset
-    path: /home/emilian/DataspellProjects/audio-diffusion-pytorch-trainer/data/SLAKH2000_super/validation
+    audio_files_dir: /home/emilian/DataspellProjects/audio-diffusion-pytorch-trainer/data/SLAKH2000_super/validation
     sr: ${sampling_rate}
     channels: ${channels}
     min_duration: ${min_duration}
@@ -65,7 +65,7 @@ datamodule:
     sample_length: ${length}
     stems: ${stems}
 
-  batch_size: 16
+  batch_size: 8
   num_workers: 8
   pin_memory: True
 
