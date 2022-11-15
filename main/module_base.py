@@ -50,7 +50,6 @@ class Model(pl.LightningModule):
 
 
 """ Datamodule """
-
 class DatamoduleWithValidation(pl.LightningDataModule):
     def __init__(
         self,
@@ -213,5 +212,14 @@ class SampleLogger(Callback):
                      ) for idx in range(self.num_items)
                     }
             )
+            # log mixture
+            wandb_logger.log(
+                {
+                    f"sample_mix_{idx}_{steps}": wandb.Audio(
+                        samples[idx, :, :].sum(axis=-1, keepdims=True),
+                        caption=f"Sampled in {steps} steps",
+                        sample_rate=self.sampling_rate,
+                    ) for idx in range(self.num_items)
+                })
         if is_train:
             pl_module.train()

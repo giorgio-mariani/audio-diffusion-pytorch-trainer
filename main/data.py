@@ -72,7 +72,7 @@ def load_audio(file, sr, offset, duration, resample=True, approx=False, time_bas
     return sig, sr
 
 
-class SupervisedSLAKHDataset(Dataset):
+class MultiSourceDataset(Dataset):
     def __init__(self, sr, channels, min_duration, max_duration, aug_shift, sample_length, audio_files_dir, stems):
         super().__init__()
         self.sr = sr
