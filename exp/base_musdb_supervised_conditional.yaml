@@ -1,3 +1,4 @@
+
 # @package _global_
 
 # Test with length 65536, batch size 4, logger sampling_steps [3]
@@ -9,14 +10,14 @@ min_duration: 12.0
 max_duration: 640.0
 aug_shift: True
 log_every_n_steps: 2000
-stems: ['bass', 'drums', 'other', 'vocals']
+stems: ['bass', 'drums', 'other', 'vocals', 'mixture']
 
 model:
   _target_: main.module_base.Model
   learning_rate: 1e-4
   beta1: 0.9
   beta2: 0.99
-  in_channels: 4
+  in_channels: 5
   channels: 256
   patch_factor: 16
   patch_blocks: 1
@@ -44,7 +45,7 @@ datamodule:
   _target_: main.module_base.DatamoduleWithValidation
   train_dataset:
     _target_: main.data.MultiSourceDataset
-    audio_files_dir: /home/emilian/Projects/audio-diffusion-pytorch-trainer/data/MusDB/train
+    audio_files_dir: null
     sr: ${sampling_rate}
     channels: ${channels}
     min_duration: ${min_duration}
@@ -55,7 +56,7 @@ datamodule:
 
   val_dataset:
     _target_: main.data.MultiSourceDataset
-    audio_files_dir: /home/emilian/Projects/audio-diffusion-pytorch-trainer/data/MusDB/test
+    audio_files_dir: null
     sr: ${sampling_rate}
     channels: ${channels}
     min_duration: ${min_duration}
@@ -89,7 +90,7 @@ callbacks:
   audio_samples_logger:
     _target_: main.module_base.SampleLogger
     num_items: 1
-    channels: 4
+    channels: 5
     sampling_rate: ${sampling_rate}
     length: ${length}
     sampling_steps: [100]
