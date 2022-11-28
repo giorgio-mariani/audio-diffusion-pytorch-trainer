@@ -3,10 +3,7 @@
 # Test with length 65536, batch size 4, logger sampling_steps [3]
 
 sampling_rate: 22050
-dataset_path: /data/MusDB/data/bass
 length: 262144
-timestretch_length: 298000
-chunk_length: 524288
 channels: 1
 log_every_n_steps: 2000
 
@@ -43,56 +40,26 @@ datamodule:
   _target_: main.module_base.DatamoduleWithValidation
   train_dataset:
     _target_: audio_data_pytorch.WAVDataset
-    path: ${dataset_path}/train
-    recursive: True
-    #crop_length: 60 # seconds crops
-    transforms:
-      _target_: torch.nn.Sequential
-      _args_:
-        - _target_: audio_data_pytorch.AllTransform
-          source_rate: 44100
-          target_rate: ${sampling_rate}
-          random_crop_size: ${timestretch_length}
-          mono: True
-          #loudness: -20
-        - _target_: main.dataset.FlipSign
-        - _target_: main.dataset.Scale
-          scales_sampler:
-            _target_: torch.distributions.uniform.Uniform
-            low: 0.75
-            high: 1.25
-        - _target_: main.dataset.TimeStretch
-          hop_length: 64
-          n_fft: 512
-          proba: 0.2
-          timerates_sampler:
-            _target_: torch.distributions.uniform.Uniform
-            low: 0.88
-            high: 1.12
-        - _target_: main.dataset.PitchShift
-          sample_rate: ${sampling_rate}
-          hop_length: 64
-          n_fft: 512
-          proba: 0.2
-          pitchshifts_sampler:
-            _target_: torch.distributions.uniform.Uniform
-            low: -2.0
-            high: 2.0
-        - _target_: audio_data_pytorch.RandomCrop
-          size: ${length}
-
-  val_dataset:
-    _target_: main.dataset.ChunkedWAVDataset 
-    path: ${dataset_path}/test
-    max_chunk_size: ${chunk_length}
+    path: /data/5B/Bass_22050/train
     recursive: True
     #crop_length: 60 # seconds crops
     transforms:
       _target_: audio_data_pytorch.AllTransform
-      source_rate: 44100
+      source_rate: ${sampling_rate}
       target_rate: ${sampling_rate}
-      mono: True
-      #loudness: -20
+      random_crop_size: ${length}
+      loudness: -20
+  val_dataset:
+    _target_: audio_data_pytorch.WAVDataset
+    path: /data/5B/Bass_22050/validation
+    recursive: True
+    #crop_length: 60 # seconds crops
+    transforms:
+      _target_: audio_data_pytorch.AllTransform
+      source_rate: ${sampling_rate}
+      target_rate: ${sampling_rate}
+      random_crop_size: ${length}
+      loudness: -20
   batch_size: 16 
   num_workers: 8
   pin_memory: True
@@ -117,7 +84,7 @@ callbacks:
 
   audio_samples_logger:
     _target_: main.module_base.SampleLogger
-    num_items: 1
+    num_items: 4
     channels: ${channels}
     sampling_rate: ${sampling_rate}
     length: ${length}
@@ -149,6 +116,6 @@ trainer:
   min_epochs: 0
   max_epochs: -1
   enable_model_summary: False
-  log_every_n_steps: 10 # Logs metrics every N batches
+  log_every_n_steps: 1 # Logs metrics every N batches
   check_val_every_n_epoch: null
   val_check_interval: ${log_every_n_steps}

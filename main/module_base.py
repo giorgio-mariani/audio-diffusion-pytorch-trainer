@@ -48,6 +48,41 @@ class Model(pl.LightningModule):
         return loss
 
 
+class ModelFromUrl(pl.LightningModule):
+    def __init__(
+        self, learning_rate: float, beta1: float, beta2: float, url: str
+    ):
+        super().__init__()
+        self.learning_rate = learning_rate
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.model = torch.hub.load_state_dict_from_url(url)
+
+    @property
+    def device(self):
+        return next(self.model.parameters()).device
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(
+            list(self.parameters()),
+            lr=self.learning_rate,
+            betas=(self.beta1, self.beta2),
+        )
+        return optimizer
+
+    def training_step(self, batch, batch_idx):
+        waveforms = batch
+        loss = self.model(waveforms)
+        self.log("train_loss", loss)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        waveforms = batch
+        loss = self.model(waveforms)
+        self.log("valid_loss", loss)
+        return loss
+
+
 """ Datamodule """
 
 class DatamoduleWithValidation(pl.LightningDataModule):
@@ -67,6 +102,7 @@ class DatamoduleWithValidation(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
+        self.save_hyperparameters()
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
