@@ -1,0 +1,91 @@
+# @package _global_
+
+# Test with length 65536, batch size 4, logger sampling_steps [3]
+
+sampling_rate: 22050
+length: 262144
+channels: 1
+min_duration: 12.0
+max_duration: 640.0
+aug_shift: True
+log_every_n_steps: 2000
+stems: ['bass', 'drums', 'guitar', 'piano']
+
+model:
+  _target_: main.module_discriminator.Model
+  learning_rate: 1e-4
+  beta1: 0.9
+  beta2: 0.99
+  in_channels: 4
+  ndf: 64
+  n_layers: 3
+
+
+datamodule:
+  _target_: main.module_base.DatamoduleWithValidation
+
+  train_dataset:
+    _target_: main.data.MultiSourceDataset
+    audio_files_dir: null
+    sr: ${sampling_rate}
+    channels: ${channels}
+    min_duration: ${min_duration}
+    max_duration: ${max_duration}
+    aug_shift: ${aug_shift}
+    sample_length: ${length}
+    stems: ${stems}
+
+  val_dataset:
+    _target_: main.data.MultiSourceDataset
+    audio_files_dir: null
+    sr: ${sampling_rate}
+    channels: ${channels}
+    min_duration: ${min_duration}
+    max_duration: ${max_duration}
+    aug_shift: ${aug_shift}
+    sample_length: ${length}
+    stems: ${stems}
+
+  batch_size: 128
+  num_workers: 8
+  pin_memory: True
+
+callbacks:
+  rich_progress_bar:
+    _target_: pytorch_lightning.callbacks.RichProgressBar
+
+  model_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    monitor: "valid_loss"   # name of the logged metric which determines when model is improving
+    save_top_k: 1           # save k best models (determined by above metric)
+    save_last: True         # additionaly always save model from last epoch
+    mode: "min"             # can be "max" or "min"
+    verbose: False
+    dirpath: ${logs_dir}/ckpts/${now:%Y-%m-%d-%H-%M-%S}
+    filename: '{epoch:02d}-{valid_loss:.3f}'
+
+  model_summary:
+    _target_: pytorch_lightning.callbacks.RichModelSummary
+    max_depth: 2
+
+loggers:
+  wandb:
+    _target_: pytorch_lightning.loggers.wandb.WandbLogger
+    project: ${oc.env:WANDB_PROJECT}
+    entity: ${oc.env:WANDB_ENTITY}
+    # offline: False  # set True to store all logs only locally
+    job_type: "train"
+    group: ""
+    save_dir: ${logs_dir}
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  gpus: 0 # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
+  precision: 32 # Precision used for tensors, default `32`
+  accelerator: null # `ddp` GPUs train individually and sync gradients, default `None`
+  min_epochs: 0
+  max_epochs: -1
+  enable_model_summary: False
+  log_every_n_steps: 1 # Logs metrics every N batches
+  check_val_every_n_epoch: null
+  val_check_interval: ${log_every_n_steps}
