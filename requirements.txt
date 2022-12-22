@@ -1,4 +1,8 @@
-pytorch-lightning
+# --extra-index-url https://download.pytorch.org/whl/cu116
+
+# torch==1.12.1+cu116
+# torchvision==0.13.1+cu116
+# torchaudio==0.12.1 
 python-dotenv
 hydra-core
 hydra-colorlog
@@ -20,4 +24,6 @@ audio-data-pytorch
 quantizer-pytorch
 difformer-pytorch
 a-transformers-pytorch
-av
+av==7.0.1
+
+pytorch-lightning==1.7.7
