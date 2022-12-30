@@ -12,6 +12,7 @@ omegaconf
 rich
 plotly
 librosa
+museval
 transformers
 eng-to-ipa
 

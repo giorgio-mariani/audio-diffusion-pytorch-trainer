@@ -1,17 +1,63 @@
+from pathlib import Path
 from typing import List, Optional, Callable, Tuple
 
+import numpy as np
 import torch
+import torchaudio
+import tqdm
 from torch import Tensor
 from math import sqrt
 
-from audio_diffusion_pytorch.diffusion import AEulerSampler, ADPM2Sampler, Diffusion, KarrasSchedule, Sampler, Schedule
-from audio_diffusion_pytorch.model import AudioDiffusionModel
-from audio_diffusion_pytorch.utils import default, exists
+from audio_diffusion_pytorch.diffusion import Sampler, KarrasSchedule, Schedule
+from torch.utils.data import DataLoader
+
+from main.dataset import assert_is_audio, SeparationDataset
+
+
+def enforce_mixture_consistency(
+        mixture_waveforms,
+        separated_waveforms,
+):
+    """Projection implementing mixture consistency in time domain.
+      This projection makes the sum across sources of separated_waveforms equal
+      mixture_waveforms and minimizes the unweighted mean-squared error between the
+      sum across sources of separated_waveforms and mixture_waveforms. See
+      https://arxiv.org/abs/1811.08521 for the derivation.
+      Args:
+        mixture_waveforms: Tensor of mixture waveforms in waveform format.
+        separated_waveforms: Tensor of separated waveforms in source image format.
+            mix_weights: None or Tensor of weights used for mixture consistency, shape
+            should broadcast with denoised_waveforms. Overrides mix_weights_type.
+
+      Returns:
+        Projected separated_waveforms as a Tensor in source image format.
+      """
+
+    # Modify the source estimates such that they sum up to the mixture, where
+    # the mixture is defined as the sum across sources of the true source
+    # targets. Uses the least-squares solution under the constraint that the
+    # resulting source estimates add up to the mixture.
+    num_sources = separated_waveforms.shape[1]
+
+    # Add a sources axis to mixture_spectrograms.
+    mix = mixture_waveforms.unsqueeze(1)
+
+    # mix is now of shape: (batch_size, 1, num_channels, samples)
+    mix_estimate = torch.sum(separated_waveforms, dim=1, keepdims=True)
+
+    # mix_estimate is of shape:
+    # (batch_size, 1, num_channels, samples).
+    mix_weights = torch.mean(torch.square(separated_waveforms), dim=[2, 3], keepdims=True)
+    mix_weights = mix_weights / torch.sum(mix_weights, dim=1, keepdims=True)
+
+    correction = mix_weights * (mix - mix_estimate)
+    separated_waveforms = separated_waveforms + correction
+    return tuple(separated_waveforms[:, i] for i in range(separated_waveforms.shape[1]))
 
 
 def compute_guidance_grad(g_x: torch.Tensor, m: torch.Tensor, sigma: float, delta: float):
      m_tilde = m + torch.randn_like(m) * (2 * sigma)
-     return (m_tilde - g_x) / delta**2
+     return (m - g_x) / delta**2
 
 
 def g(xs: List[Tensor]) -> Tensor:
@@ -20,7 +66,7 @@ def g(xs: List[Tensor]) -> Tensor:
 
 class AEulerSeparator(Sampler):
 
-    def __init__(self, mixture, delta):
+    def __init__(self, mixture, delta: float = 1.0):
         super().__init__()
         self.mixture = mixture
         self.delta = delta
@@ -34,14 +80,12 @@ class AEulerSeparator(Sampler):
         # Sigma steps
         sigma_up, sigma_down = self.get_sigmas(sigma, sigma_next)
         xs_next = []
-        guid_grad = compute_guidance_grad(g_x=g(xs), m=self.mixture, sigma=sigma, delta=self.delta)
-
-        for x, fn in zip(xs,fns):
+        for x, fn in zip(xs, fns):
             # Derivative at sigma (∂x/∂sigma)
-            d = (x - fn(x, sigma=sigma)) / sigma #+ 0.2 * self.delta**2/(sigma_next - sigma) * guid_grad
+            d = (x - fn(x, sigma=sigma)) / sigma - 8 * (self.mixture - g(xs)) / sigma
 
             # Euler method
-            x_next = x + d * (sigma_next - sigma) + 0.2 * (self.mixture - g(xs))
+            x_next = x + d * (sigma_next - sigma) #+ 0.2 * (self.mixture - g(xs))
 
             # Add randomness
             #x_next = x_next + torch.randn_like(x) * sigma_up
@@ -56,6 +100,285 @@ class AEulerSeparator(Sampler):
         for i in range(num_steps - 1):
             xs = self.step(xs, fns, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
         return xs
+    
+class EulerSeparator(Sampler):
+
+    def __init__(self, mixture, delta: float = 1.0):
+        super().__init__()
+        self.mixture = mixture
+        self.delta = delta
+
+    def step(self, xs: List[Tensor], fns: List[Callable], sigma: float, sigma_next: float) -> List[Tensor]:
+        xs_next = []
+        for x, fn in zip(xs, fns):
+            # Gradient at sigma (∂x/∂sigma)
+            d = (x - fn(x, sigma=sigma)) / sigma
+
+            # Euler method
+            x_next = x + d * (sigma_next - sigma) #+ 0.2 * (self.mixture - g(xs))
+
+            xs_next.append(x_next)
+        return xs_next
+
+    def forward(
+        self, noises: List[Tensor], fns: List[Callable], sigmas: Tensor, num_steps: int
+    ) -> List[Tensor]:
+        xs = [sigmas[0] * noise for noise in noises]
+        # Denoise to sample
+        for i in range(num_steps - 1):
+            xs = self.step(xs, fns, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+        return xs
+
+
+
+class ADPM2Separator(Sampler):
+    def __init__(self, mixture, rho: float = 1.0):
+        super().__init__()
+        self.rho = rho
+        self.mixture = mixture
+
+    def get_sigmas(self, sigma: float, sigma_next: float) -> Tuple[float, float, float]:
+        r = self.rho
+        sigma_up = sqrt(sigma_next ** 2 * (sigma ** 2 - sigma_next ** 2) / sigma ** 2)
+        sigma_down = sqrt(sigma_next ** 2 - sigma_up ** 2)
+        sigma_mid = ((sigma ** (1 / r) + sigma_down ** (1 / r)) / 2) ** r
+        return sigma_up, sigma_down, sigma_mid
+
+    def step(self, xs: List[Tensor], fns: List[Callable], sigma: float, sigma_next: float) -> List[Tensor]:
+        # Sigma steps
+        sigma_up, sigma_down, sigma_mid = self.get_sigmas(sigma, sigma_next)
+
+        xs_mid, xs_next = [], []
+        for x, fn in zip(xs, fns):
+            # Derivative at sigma (∂x/∂sigma)
+            d = (x - fn(x, sigma=sigma)) / sigma
+            # Denoise to midpoint
+            x_mid = x + d * (sigma_mid - sigma)# - 8 * (self.mixture - g(xs)) / sigma
+            xs_mid.append(x_mid)
+
+        for x, x_mid, fn in zip(xs, xs_mid, fns):
+            # Derivative at sigma_mid (∂x_mid/∂sigma_mid)
+            d_mid = (x_mid - fn(x_mid, sigma=sigma_mid)) / sigma_mid #- 8 * (self.mixture - g(xs_mid)) / sigma_mid
+
+            # Denoise to next
+            x = x + d_mid * (sigma_down - sigma)
+
+            # Add randomness
+            x_next = x + torch.randn_like(x) * sigma_up + 0.2*(self.mixture - g(xs))
+            xs_next.append(x_next)
+
+        #print(tuple(x.norm() for x in xs_next))
+        return xs_next
+
+    def forward(
+        self, noises: List[Tensor], fns: List[Callable], sigmas: Tensor, num_steps: int
+    ) -> List[Tensor]:
+        xs = [sigmas[0] * noise for noise in noises]
+        # Denoise to sample
+        for i in range(num_steps - 1):
+            xs = self.step(xs, fns, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+        return xs
+
+
+class AEulerSeparatorSymmetric(Sampler):
+    def __init__(self, mixture, delta: float = 1.0):
+        super().__init__()
+        self.mixture = mixture
+        self.delta = delta
+
+    def step(self, xs: List[Tensor], fns: List[Callable], sigma: float, sigma_next: float) -> List[Tensor]:
+        # Sigma steps
+        S1 = lambda x, sigma: (fns[0](x, sigma=sigma) - x)/sigma**2
+        S2 = lambda x, sigma: (fns[1](x, sigma=sigma) - x)/sigma**2
+
+        # Derivative at sigma (∂x/∂sigma)
+        x1, x2 = xs
+        m = self.mixture
+        epsilon = 0.0#torch.randn(size=[1, 1, 1], device=m.device)
+        grad_log_p1 = S1(x1, sigma) - 1.2 * S2(m - x1 + 2*sigma*epsilon, sigma).mean(dim=0).unsqueeze(0)
+        grad_log_p2 = S2(x2, sigma) - 1.2 * S1(m - x2 + 2*sigma*epsilon, sigma).mean(dim=0).unsqueeze(0)
+
+        # Euler method
+        x1_next = x1 + (sigma_next - sigma) * -grad_log_p1 * sigma
+        x2_next = x2 + (sigma_next - sigma) * -grad_log_p2 * sigma
+
+        # Add randomness
+        #x_next = x_next + torch.randn_like(x) * sigma_up
+        return [x1_next, x2_next]
+
+    def forward(
+        self, noises: List[Tensor], fns: List[Callable], sigmas: Tensor, num_steps: int
+    ) -> List[Tensor]:
+        xs = [sigmas[0] * noise for noise in noises]
+        # Denoise to sample
+        for i in range(num_steps - 1):
+            xs = self.step(xs, fns, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+        return xs
+
+
+class ADPM2Extractor(Sampler):
+    """https://www.desmos.com/calculator/jbxjlqd9mb"""
+
+    def __init__(self, mixture: torch.Tensor, rho: float = 1.0):
+        super().__init__()
+        self.rho = rho
+        self.mixture = mixture
+
+    def get_sigmas(self, sigma: float, sigma_next: float) -> Tuple[float, float, float]:
+        r = self.rho
+        sigma_up = sqrt(sigma_next ** 2 * (sigma ** 2 - sigma_next ** 2) / sigma ** 2)
+        sigma_down = sqrt(sigma_next ** 2 - sigma_up ** 2)
+        sigma_mid = ((sigma ** (1 / r) + sigma_down ** (1 / r)) / 2) ** r
+        return sigma_up, sigma_down, sigma_mid
+
+    def compute_differential(self, s1, s2, x, sigma):
+        grad_log_p1 = s1(x, sigma) - 1. * s2(self.mixture - x, sigma).mean(dim=0).unsqueeze(0)
+        return -grad_log_p1 * sigma
+
+    def step(self, xs: List[Tensor], fns: List[Callable], sigma: float, sigma_next: float) -> List[Tensor]:
+        # Sigma steps
+        S1 = lambda x, sigma: (fns[0](x, sigma=sigma) - x)/sigma**2
+        S2 = lambda x, sigma: (fns[1](x, sigma=sigma) - x)/sigma**2
+
+        # Sigma steps
+        sigma_up, sigma_down, sigma_mid = self.get_sigmas(sigma, sigma_next)
+
+        xs_next = []
+        for x, (s1,s2) in zip(xs, [(S1, S2), (S2, S1)]):
+            # Derivative at sigma (∂x/∂sigma)
+            d = self.compute_differential(s1=s1, s2=s2, x=x, sigma=sigma)
+
+            # Denoise to midpoint
+            x_mid = x + d * (sigma_mid - sigma)
+
+            # Derivative at sigma_mid (∂x_mid/∂sigma_mid)
+            d_mid = self.compute_differential(s1=s1, s2=s2, x=x_mid, sigma=sigma_mid)
+
+            # Denoise to next
+            x = x + d_mid * (sigma_down - sigma)
+
+            # Add randomness
+            x_next = x + torch.randn_like(x) * sigma_up
+            xs_next.append(x_next)
+        return xs_next
+
+    def forward(
+        self, noises: Tensor, fns: Callable, sigmas: Tensor, num_steps: int
+    ) -> Tensor:
+        xs = [sigmas[0] * noise for noise in noises]
+        # Denoise to sample
+        for i in range(num_steps - 1):
+            xs = self.step(xs, fns=fns, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+
+        y1, y2 = xs
+        y1, y2 = self.mixture - y2, self.mixture - y1
+
+        #y1_normalized, y2_normalized = least_squares_normalization(y1, y2, self.mixture)
+        #y1_cons, y2_cons = enforce_mixture_consistency(self.mixture, torch.stack([y1_normalized, y2_normalized], dim=1))
+
+        #return [y1_normalized, y2_normalized]
+        return [y1, y2]
+    
+
+class EulerExtractor(Sampler):
+
+    def __init__(self, mixture: torch.Tensor):
+        super().__init__()
+        self.mixture = mixture
+
+    def compute_differential(self, s1, s2, x, sigma):
+        grad_log_p1 = s1(x, sigma) - 1. * s2(self.mixture - x, sigma).mean(dim=0).unsqueeze(0)
+        return -grad_log_p1
+
+    def step(self, xs: List[Tensor], fns: List[Callable], sigma: float, sigma_next: float) -> List[Tensor]:
+        # Sigma steps
+        S1 = lambda x, sigma: (fns[0](x, sigma=sigma) - x)/sigma
+        S2 = lambda x, sigma: (fns[1](x, sigma=sigma) - x)/sigma
+
+        xs_next = []
+        for x, (s1,s2) in zip(xs, [(S1, S2), (S2, S1)]):
+            # Derivative at sigma (∂x/∂sigma)
+            d = self.compute_differential(s1=s1, s2=s2, x=x, sigma=sigma)
+
+            # Euler step
+            x_next = x + d * (sigma_next - sigma)
+
+            xs_next.append(x_next)
+        return xs_next
+
+    def forward(
+        self, noises: Tensor, fns: Callable, sigmas: Tensor, num_steps: int
+    ) -> Tensor:
+        xs = [sigmas[0] * noise for noise in noises]
+        # Denoise to sample
+        for i in range(num_steps - 1):
+            xs = self.step(xs, fns=fns, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+
+        y1, y2 = xs
+        y1, y2 = self.mixture - y2, self.mixture - y1
+
+        #y1_normalized, y2_normalized = least_squares_normalization(y1, y2, self.mixture)
+        #y1_cons, y2_cons = enforce_mixture_consistency(self.mixture, torch.stack([y1_normalized, y2_normalized], dim=1))
+
+        #return [y1_normalized, y2_normalized]
+        return [y1, y2]
+    
+
+class RungeKuttaExtractor(Sampler):
+
+    def __init__(self, mixture: torch.Tensor):
+        super().__init__()
+        self.mixture = mixture
+
+    def compute_differential(self, s1, s2, x, sigma):
+        grad_log_p1 = s1(x, sigma) - 1. * s2(self.mixture - x, sigma).mean(dim=0).unsqueeze(0)
+        return -grad_log_p1
+
+    def step(self, xs: List[Tensor], fns: List[Callable], sigma: float, sigma_next: float) -> List[Tensor]:
+        # Positive gradients
+        S1 = lambda x, sigma: (fns[0](x, sigma=sigma) - x)/sigma
+        S2 = lambda x, sigma: (fns[1](x, sigma=sigma) - x)/sigma
+
+        xs_next = []
+        for x, (s1,s2) in zip(xs, [(S1, S2), (S2, S1)]):
+            h = sigma_next - sigma #negative
+            f = self.compute_differential
+            
+            k1 = h * f(s1=s1, s2=s2, x=x, sigma=sigma)
+            k2 = h * f(s1=s1, s2=s2, x=x + k1/2, sigma=sigma + h/2)
+            k3 = h * f(s1=s1, s2=s2, x=x + k2/2, sigma=sigma + h/2)
+            k4 = h * f(s1=s1, s2=s2, x=x + k3, sigma=sigma_next)
+            k = (k1+2*k2+2*k3+k4)/6
+            x_next = x + k
+            
+            xs_next.append(x_next)
+        return xs_next
+
+    def forward(
+        self, noises: Tensor, fns: Callable, sigmas: Tensor, num_steps: int
+    ) -> Tensor:
+        xs = [sigmas[0] * noise for noise in noises]
+        # Denoise to sample
+        for i in range(num_steps - 1):
+            xs = self.step(xs, fns=fns, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+
+        y1, y2 = xs
+        y1, y2 = self.mixture - y2, self.mixture - y1
+
+        #y1_normalized, y2_normalized = least_squares_normalization(y1, y2, self.mixture)
+        #y1_cons, y2_cons = enforce_mixture_consistency(self.mixture, torch.stack([y1_normalized, y2_normalized], dim=1))
+
+        #return [y1_normalized, y2_normalized]
+        return [y1, y2]
+    
+
+def least_squares_normalization(y1,y2,m):
+    y1np, y2np = y1.view(-1).cpu().numpy(), y2.view(-1).cpu().numpy()
+    y = np.stack([y1np, y2np], axis=1)
+    a = np.linalg.lstsq(y, m.view(-1,1).cpu().numpy())
+    a,_,_,_ = a
+    a1, a2 = a.reshape(-1).tolist()
+    return a1*y1, a2*y2
 
 
 class KarrasSeparator(Sampler):
@@ -142,7 +465,7 @@ class KarrasSeparator(Sampler):
 
 
 def edm_sampler(
-    fn,
+    denoise_fn,
     latents,
     randn_like=torch.randn_like,
     num_steps: int = 50,
@@ -158,7 +481,7 @@ def edm_sampler(
     # Time step discretization.
     step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
     sigmas = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
-    sigmas = torch.cat([fn.round_sigma(sigmas), torch.zeros_like(sigmas[:1])]) # t_N = 0
+    sigmas = torch.cat([denoise_fn.round_sigma(sigmas), torch.zeros_like(sigmas[:1])]) # t_N = 0
 
     # Main sampling loop.
     x_next = latents.to(torch.float64) * sigmas[0]
@@ -167,48 +490,100 @@ def edm_sampler(
 
         # Increase noise temporarily.
         gamma = min(s_churn / num_steps, sqrt(2) - 1) if s_min <= sigma <= s_max else 0
-        t_hat = fn.round_sigma(sigma + gamma * sigma) #What is it?
+        t_hat = denoise_fn.round_sigma(sigma + gamma * sigma) #What is it?
         x_hat = x_cur + (t_hat ** 2 - sigma ** 2).sqrt() * s_noise * randn_like(x_cur)
 
         # Euler step.
-        denoised = fn(x_hat, sigma=t_hat).to(torch.float64)
+        denoised = denoise_fn(x_hat, sigma=t_hat).to(torch.float64)
         d = (x_hat - denoised) / t_hat
         x_next = x_hat + (sigma_next - t_hat) * d
 
         # Apply 2nd order correction.
         if i < num_steps - 1:
-            denoised = fn(x_next, sigma=sigma_next).to(torch.float64)
+            denoised = denoise_fn(x_next, sigma=sigma_next).to(torch.float64)
             d_prime = (x_next - denoised) / sigma_next
             x_next = x_hat + (sigma_next - t_hat) * (0.5 * d + 0.5 * d_prime)
 
-#
-# @torch.no_grad()
-# def separate(
-#         model1,
-#         model2,
-#         mixture,
-#         device: torch.device = torch.device("cuda"),
-#         num_steps: int = 202,
-# ):
-#     batch, in_channels = 1, 1
-#     samples = mixture.shape[-1]
-#
-#     m = torch.tensor(mixture).to(device)
-#     models = [model1.model, model2.model]
-#
-#     for model in models:
-#         model.to(device)
-#
-#     # schedule = lambda num_steps,device: torch.flip(torch.sort(diffusion_sigma_distribution(num_steps*10, device))[0][::10],dims=[0])
-#     # schedule = lambda num_steps, device: torch.arange(0.6, 0.0, -0.6/num_steps,device=device)
-#     schedule = KarrasSchedule(sigma_min=1e-4, sigma_max=1.0, rho=8.0)
-#
-#     diffusion_separator = DiffusionSeparator(
-#         [model.diffusion for model in models],
-#         samplers=[ADPM2Sampler(rho=1.0), ADPM2Sampler(rho=1.0)],
-#         sigma_schedules=[schedule, schedule],
-#         num_steps=num_steps
-#     )
-#
-#     noises = [torch.randn_like(m).to(device), torch.randn_like(m).to(device)]
-#     return diffusion_separator.forward(m, noises)
+
+@torch.no_grad()
+def separate(
+    denoise_fns: List[Callable],
+    separator,
+    noises,
+    num_steps: int = 100,
+    sigma_schedule: Schedule = None,
+    device: torch.device = torch.device("cpu"),
+):
+    sigma_schedule = KarrasSchedule(1e-2, 1.0, rho=9.0) if sigma_schedule is None else sigma_schedule
+    sigma = sigma_schedule(num_steps, device)
+    return separator(noises=noises, fns=denoise_fns, sigmas=sigma, num_steps=num_steps)
+
+
+def separate_dataset(
+    dataset: SeparationDataset,
+    denoise_fns: List[Callable],
+    save_path: str = "evaluation_results",
+    device: Optional[torch.device] = None,
+    separation_steps: int = 100,
+    separator = ADPM2Separator,
+    sigma_schedule: Schedule = None,
+):
+    # get arguments
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") if device is None else device
+    device = torch.device(device)
+    sample_rate = dataset.sample_rate
+
+    # convert paths
+    save_path = Path(save_path)
+    if save_path.exists() and not len(list(save_path.glob("*"))) == 0:
+        raise ValueError(f"Path {save_path} already exists!")
+
+    # get samples
+    loader = DataLoader(dataset, batch_size=None, num_workers=8)
+
+    # main loop
+    save_path.mkdir(exist_ok=True)
+    for batch_idx, batch in enumerate(tqdm.tqdm(loader)):
+
+        # load audio tracks
+        tracks = batch
+        print(f"chunk {batch_idx+1} out of {len(dataset)}")
+        # generate mixture
+        tracks = [track.unsqueeze(0).to(device) for track in tracks]
+        mixture = sum(tracks)
+
+        _, _, num_samples = mixture.shape
+
+        seps = separate(
+            denoise_fns=denoise_fns,
+            separator=separator(mixture=mixture),
+            sigma_schedule=sigma_schedule,
+            num_steps=separation_steps,
+            noises = [torch.randn(1, 1, num_samples).to(device) for _ in range(len(denoise_fns))]
+        )
+
+        chunk_path = save_path / f"{batch_idx}"
+        chunk_path.mkdir(parents=True)
+
+
+        # save separated audio
+        save_separation(
+            separated_tracks=[sep.squeeze(0) for sep in seps],
+            original_tracks=[track.squeeze(0) for track in tracks],
+            sample_rate=sample_rate,
+            chunk_path=chunk_path,
+        )
+
+
+def save_separation(
+    separated_tracks: List[torch.Tensor],
+    original_tracks: List[torch.Tensor],
+    sample_rate: int,
+    chunk_path: Path,
+):
+    assert_is_audio(*original_tracks, *separated_tracks)
+    #assert original_1.shape == original_2.shape == separation_1.shape == separation_2.shape
+    assert len(original_tracks) == len(separated_tracks)
+    for i, (ori, sep) in enumerate(zip(original_tracks, separated_tracks)):
+        torchaudio.save(chunk_path / f"ori{i+1}.wav", ori.cpu(), sample_rate=sample_rate)
+        torchaudio.save(chunk_path / f"sep{i+1}.wav", sep.cpu(), sample_rate=sample_rate)
