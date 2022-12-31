@@ -240,7 +240,7 @@ class CrawsonEulerSeparatorBASIS(Sampler):
             dt = sigma_next - sigma_hat
             
             # Euler method
-            x_next = x + d * dt +  10 * (self.mixture - g(xs))
+            x_next = x + d * dt + 10 * (self.mixture - g(xs))
             xs_next.append(x_next)
     
         return xs_next
@@ -263,7 +263,86 @@ class CrawsonEulerSeparatorBASIS(Sampler):
         return y1,y2
         return [y1_normalized, y2_normalized]
 
-    
+
+class CrawsonHeunSeparatorBASIS(Sampler):
+
+    def __init__(self, mixture: torch.Tensor):
+        super().__init__()
+        self.mixture = mixture
+
+    def compute_differential(self, s1, s2, x, sigma):
+        grad_log_p1 = s1(x, sigma)
+        return -grad_log_p1
+
+    def step(self, xs: List[Tensor], fns: List[Callable], sigma: float, sigma_next: float, num_steps: int, s_churn=40.,
+             s_tmin=0., s_tmax=float('inf'), s_noise=1.) -> List[Tensor]:
+
+        # Sigma steps
+        def g(xs: List[Tensor]) -> Tensor:
+            return torch.stack(xs, dim=0).sum(dim=0)
+
+        xs_next = []
+        for x, denoise_fn in zip(xs, fns):
+
+            gamma = min(s_churn / (num_steps - 1), 2 ** 0.5 - 1) if s_tmin <= sigma <= s_tmax else 0.
+            eps = torch.randn_like(x) * s_noise
+            sigma_hat = sigma * (gamma + 1)
+
+            if gamma > 0:
+                x = x + eps * (sigma_hat ** 2 - sigma ** 2) ** 0.5
+
+            d = (x - denoise_fn(x, sigma=sigma)) / sigma
+            dt = sigma_next - sigma_hat
+
+            # Euler method
+            x_next = x + d * dt + 10 * (self.mixture - g(xs))
+            xs_next.append(x_next)
+
+            gamma = min(s_churn / (num_steps - 1), 2 ** 0.5 - 1) if s_tmin <= sigma <= s_tmax else 0.
+            eps = torch.randn_like(x) * s_noise
+            sigma_hat = sigma * (gamma + 1)
+
+            if gamma > 0:
+                x = x + eps * (sigma_hat ** 2 - sigma ** 2) ** 0.5
+
+            d = self.compute_differential(s1=s1, s2=s2, x=x, sigma=sigma_hat)
+            dt = sigma_next - sigma_hat
+
+            if is_last:
+                # Euler method
+                x_next = x + d * dt
+            else:
+                # Heun's method
+                x_2 = x + d * dt
+
+                d_2 = self.compute_differential(s1=s1, s2=s2, x=x_2, sigma=sigma_next)
+                d_prime = (d + d_2) / 2
+                x_next = x + d_prime * dt
+
+            xs_next.append(x_next)
+
+        return xs_next
+
+    def forward(
+            self, noises: Tensor, fns: Callable, sigmas: Tensor, num_steps: int, s_churn: float = 20.0,
+    ) -> Tensor:
+        xs = [sigmas[0] * noise for noise in noises]
+
+        # Denoise to sample
+        for i in range(num_steps - 1):
+            xs = self.step(xs, fns=fns, sigma=sigmas[i], sigma_next=sigmas[i + 1], num_steps=num_steps,
+                           s_churn=s_churn)  # type: ignore # noqa
+
+        y1, y2 = xs
+        y1, y2 = self.mixture - y2, self.mixture - y1
+
+        # y1_normalized, y2_normalized = least_squares_normalization(y1, y2, self.mixture)
+        # y1_cons, y2_cons = enforce_mixture_consistency(self.mixture, torch.stack([y1_normalized, y2_normalized], dim=1))
+
+        return y1, y2
+        return [y1_normalized, y2_normalized]
+
+
 class HeunSampler(Sampler):
 
     def __init__(self, mixture: torch.Tensor):
@@ -277,7 +356,7 @@ class HeunSampler(Sampler):
         
         # Gradient from score function
         grad1 = lambda x, sigma: (fns[0](x, sigma=sigma) - x)/sigma
-        gard2 = lambda x, sigma: (fns[1](x, sigma=sigma) - x)/sigma
+        grad2 = lambda x, sigma: (fns[1](x, sigma=sigma) - x)/sigma
         
         gradients = [grad1, grad2]
 

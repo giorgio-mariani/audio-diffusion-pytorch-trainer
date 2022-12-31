@@ -174,8 +174,8 @@ class TrackPairsDataset(SeparationDataset):
         )
 
         channels, samples = zip(*[t.shape for t in tracks])
-        for c in channels:
-            assert c == 1
+        #for c in channels:
+        #    assert c == 1
 
         for s1, s2 in itertools.product(samples, samples):
             assert abs(s1 - s2) <= self.sample_eps, f"{filename}: {abs(s2 - s2)}"
@@ -251,7 +251,7 @@ def load_audio_tracks(paths: List[Union[str, Path]], sample_rate: int) -> Tuple[
 def assert_is_audio(*signal: torch.Tensor):
     for s in signal:
         assert len(s.shape) == 2
-        assert s.shape[0] == 1
+        assert s.shape[0] == 1 or s.shape[0] == 2
 
 
 def is_silent(signal: torch.Tensor, silence_threshold: float = 1.5e-5) -> bool:
