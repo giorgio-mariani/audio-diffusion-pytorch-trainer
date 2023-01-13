@@ -1,18 +1,51 @@
 import functools
 import math
 from pathlib import Path
-from typing import Union, Optional, Callable, Tuple
+from typing import Union, Optional, Callable, Tuple, Sequence
 
 import random
 import torch
 import torch.nn as nn
 import torchaudio
 from audio_data_pytorch import AllTransform
-from audio_data_pytorch.datasets.wav_dataset import get_all_wav_filenames
+from audio_data_pytorch.datasets.wav_dataset import get_all_wav_filenames, WAVDataset
 from torch import Tensor
 from torch.distributions import Distribution
 from torch.utils.data import Dataset
 
+
+class CachedWAVDataset(WAVDataset):
+    def __init__(
+            self,
+            path: Union[str, Sequence[str]],
+            recursive: bool = False,
+            transforms: Optional[Callable] = None,
+            sample_rate: Optional[int] = None,
+    ):
+        super().__init__(path, recursive, transforms, sample_rate)
+
+    @functools.lru_cache(1024)
+    def load_audio(self, wav_file: str) -> Tuple[Tensor, int]:
+        return torchaudio.load(wav_file)
+
+    def __getitem__(
+        self, idx: Union[Tensor, int]
+    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+        idx = idx.tolist() if torch.is_tensor(idx) else idx
+        waveform, sample_rate = self.load_audio(self.wavs[idx])
+
+        if self.sample_rate and sample_rate != self.sample_rate:
+            waveform = torchaudio.transforms.Resample(
+                orig_freq=sample_rate, new_freq=self.sample_rate
+            )(waveform)
+
+        if self.transforms:
+            waveform = self.transforms(waveform)
+
+        return waveform
+
+    def __len__(self) -> int:
+        return len(self.wavs)
 
 class ChunkedWAVDataset(Dataset):
     def __init__(
