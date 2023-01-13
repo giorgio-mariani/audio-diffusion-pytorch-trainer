@@ -3,6 +3,7 @@
 # Test with length 65536, batch size 4, logger sampling_steps [3]
 
 sampling_rate: 22050
+dataset_path: /data/5B/Bass_22050
 length: 262144
 channels: 1
 log_every_n_steps: 2000
@@ -40,7 +41,7 @@ datamodule:
   _target_: main.module_base.DatamoduleWithValidation
   train_dataset:
     _target_: main.dataset.CachedWAVDataset
-    path: /data/5B/Bass_22050/train
+    path: ${dataset_path}/train
     recursive: True
     #crop_length: 60 # seconds crops
     transforms:
@@ -48,7 +49,7 @@ datamodule:
       source_rate: ${sampling_rate}
       target_rate: ${sampling_rate}
       random_crop_size: ${length}
-      loudness: -20
+      # loudness: -20
   val_dataset:
     #_target_: main.dataset.CachedWAVDataset
     #path: /data/5B/Bass_22050/validation
@@ -60,14 +61,14 @@ datamodule:
     #  random_crop_size: ${length}
     #  loudness: -20
     _target_: main.dataset.ChunkedWAVDataset
-    path: /data/5B/Bass_22050/validation
+    path: ${dataset_path}/validation
     max_chunk_size: ${length}
     recursive: True
     transforms:
       _target_: audio_data_pytorch.AllTransform
       source_rate: ${sampling_rate}
       target_rate: ${sampling_rate}
-      loudness: -20
+      #loudness: -20
 
   batch_size: 16 
   num_workers: 8
@@ -93,7 +94,7 @@ callbacks:
 
   audio_samples_logger:
     _target_: main.module_base.SampleLogger
-    num_items: 4
+    num_items: 1
     channels: ${channels}
     sampling_rate: ${sampling_rate}
     length: ${length}
@@ -119,12 +120,12 @@ loggers:
 
 trainer:
   _target_: pytorch_lightning.Trainer
-  gpus: 0 # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
+  gpus: 1 # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
   precision: 32 # Precision used for tensors, default `32`
   accelerator: null # `ddp` GPUs train individually and sync gradients, default `None`
   min_epochs: 0
   max_epochs: -1
   enable_model_summary: False
-  log_every_n_steps: 1 # Logs metrics every N batches
+  log_every_n_steps: 10 # Logs metrics every N batches
   check_val_every_n_epoch: null
   val_check_interval: ${log_every_n_steps}

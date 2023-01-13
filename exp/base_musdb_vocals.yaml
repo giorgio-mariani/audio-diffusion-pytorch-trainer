@@ -42,7 +42,7 @@ model:
 datamodule:
   _target_: main.module_base.DatamoduleWithValidation
   train_dataset:
-    _target_: audio_data_pytorch.WAVDataset
+    _target_: main.dataset.CachedWAVDataset
     path: ${dataset_path}/train
     recursive: True
     #crop_length: 60 # seconds crops
