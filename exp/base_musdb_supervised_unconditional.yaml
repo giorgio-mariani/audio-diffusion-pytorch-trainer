@@ -44,18 +44,46 @@ datamodule:
   _target_: main.module_base.DatamoduleWithValidation
   train_dataset:
     _target_: main.data.MultiSourceDataset
-    audio_files_dir: null
+    audio_files_dir: ???
     sr: ${sampling_rate}
     channels: ${channels}
     min_duration: ${min_duration}
     max_duration: ${max_duration}
     aug_shift: ${aug_shift}
-    sample_length: ${length}
+    sample_length: 298000 #${length}
     stems: ${stems}
+    transform:
+      _target_: torch.nn.Sequential
+      _args_:
+        - _target_: main.dataset.FlipSign
+        - _target_: main.dataset.Scale
+          scales_sampler:
+            _target_: torch.distributions.uniform.Uniform
+            low: 0.75
+            high: 1.25
+        - _target_: main.dataset.TimeStretch
+          hop_length: 64
+          n_fft: 512
+          proba: 0.2
+          timerates_sampler:
+            _target_: torch.distributions.uniform.Uniform
+            low: 0.88
+            high: 1.12
+        - _target_: main.dataset.PitchShift
+          sample_rate: ${sampling_rate}
+          hop_length: 64
+          n_fft: 512
+          proba: 0.2
+          pitchshifts_sampler:
+            _target_: torch.distributions.uniform.Uniform
+            low: -2.0
+            high: 2.0
+        - _target_: audio_data_pytorch.RandomCrop
+          size: ${length}
 
   val_dataset:
     _target_: main.data.MultiSourceDataset
-    audio_files_dir: null
+    audio_files_dir: ???
     sr: ${sampling_rate}
     channels: ${channels}
     min_duration: ${min_duration}

@@ -71,9 +71,12 @@ def load_audio(file, sr, offset, duration, resample=True, approx=False, time_bas
     assert total_read <= duration, f"Expected {duration} frames, got {total_read}"
     return sig, sr
 
+def _identity(x):
+  return x
+
 
 class MultiSourceDataset(Dataset):
-    def __init__(self, sr, channels, min_duration, max_duration, aug_shift, sample_length, audio_files_dir, stems):
+    def __init__(self, sr, channels, min_duration, max_duration, aug_shift, sample_length, audio_files_dir, stems, transform=None):
         super().__init__()
         self.sr = sr
         self.channels = channels
@@ -86,6 +89,7 @@ class MultiSourceDataset(Dataset):
                 sample_length / sr < self.min_duration
         ), f"Sample length {sample_length} per sr {sr} ({sample_length / sr:.2f}) should be shorter than min duration {self.min_duration}"
         self.aug_shift = aug_shift
+        self.transform = transform if transform is not None else _identity 
         self.init_dataset()
 
     def filter(self, tracks):
@@ -160,7 +164,8 @@ class MultiSourceDataset(Dataset):
 
     def get_item(self, item):
         index, offset = self.get_index_offset(item)
-        return self.get_song_chunk(index, offset)
+        wav = self.get_song_chunk(index, offset)
+        return self.transform(torch.from_numpy(wav))
 
     def __len__(self):
         return int(np.floor(self.cumsum[-1] / self.sample_length))

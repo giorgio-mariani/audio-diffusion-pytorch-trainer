@@ -96,8 +96,9 @@ class FlipSign(nn.Module):
     Random sign flip.
     """
     def forward(self, wav):
+        num_channels, _ = wav.shape
         if self.training:
-            signs = torch.randint(2, (1,1), device=wav.device, dtype=torch.float32)
+            signs = torch.randint(2, (num_channels,1), device=wav.device, dtype=torch.float32)
             wav = wav * (2 * signs - 1)
         return wav
 
@@ -109,8 +110,9 @@ class Scale(nn.Module):
         self.scales_sampler = scales_sampler
 
     def forward(self, wav):
+        num_channels, _ = wav.shape
         if self.training and random.random() < self.proba:
-            wav[:, :] = wav[:, :] * self.scales_sampler.sample()
+            wav[:, :] = wav[:, :] * self.scales_sampler.sample([num_channels, 1])
         return wav
 
 
