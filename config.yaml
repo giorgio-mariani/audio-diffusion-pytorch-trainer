@@ -9,7 +9,7 @@ train: True
 ignore_warnings: True
 print_config: False # Prints tree with all configurations
 work_dir: ${hydra:runtime.cwd}  # This is the root of the project
-logs_work_dir: /home/epos/jobs/audio-diffusion-pytorch-trainer/
+logs_work_dir: /home/{oc.env:CLUSTER_USER}/jobs/audio-diffusion-pytorch-trainer/
 logs_dir: ${logs_work_dir}${oc.env:DIR_LOGS}  # This is the root for all logs
 data_dir: ${work_dir}${oc.env:DIR_DATA} # This is the root for all data
 ckpt_dir: ${logs_dir}/ckpts/${now:%Y-%m-%d-%H-%M-%S}
