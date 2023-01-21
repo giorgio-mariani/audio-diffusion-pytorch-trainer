@@ -5,7 +5,8 @@ import functools
 import math
 import warnings
 from pathlib import Path
-from typing import Union, Optional, Callable, Tuple, Sequence
+import os
+from typing import Union, Optional, Callable, Tuple, Sequence, List
 
 import random
 
@@ -71,14 +72,14 @@ class ChunkedWAVDataset(Dataset):
         self.max_chunk_size = max_chunk_size
         self.transforms = transforms
 
-        self.index_to_file, self.index_to_chunk = [], []
+        self.index_to_file, self.index_to_track_chunk = [], []
         for file in self.wavs:
             t1 = self.get_track(file)
             available_chunks = get_chunks(t1, max_chunk_size, min_chunk_size)
             self.index_to_file.extend([file] * available_chunks)
-            self.index_to_chunk.extend(range(available_chunks))
+            self.index_to_track_chunk.extend(range(available_chunks))
 
-        assert len(self.index_to_chunk) == len(self.index_to_file)
+        assert len(self.index_to_track_chunk) == len(self.index_to_file)
 
     @functools.lru_cache(1024)
     def get_track(self, filename: str) -> Tensor:
@@ -93,7 +94,7 @@ class ChunkedWAVDataset(Dataset):
         return self.index_to_file[item]
 
     def get_chunk_indices(self, item: int) -> Tuple[int, int]:
-        ci = self.index_to_chunk[item]
+        ci = self.index_to_track_chunk[item]
         return ci * self.max_chunk_size, (ci + 1) * self.max_chunk_size
 
     def __getitem__(self, item: int) -> Tensor:
@@ -165,103 +166,146 @@ class UnionSeparationDataset(SeparationDataset):
         return self.sr
 
 
-class TrackPairsDataset(SeparationDataset):
+class TransformDataset(SeparationDataset):
+    def __init__(self, dataset: SeparationDataset, transform: Callable):
+        #self.new_sample_rate = new_sample_rate if new_sample_rate is not None else dataset.sample_rate
+        #if new_sample_rate is not None:
+        #    resample_transform = torchaudio.transforms.Resample(
+        #        orig_freq=dataset.sample_rate,
+        #        new_freq=new_sample_rate,
+        #    )
+        #    sequential_transform = lambda x: resample_transform(transform(x))
+        #    self.transform = sequential_transform
+        #else:
+        #    self.transform = transform
+        self.transform = transform
+        self.dataset = dataset
+
+    def __getitem__(self, item) -> Tuple[torch.Tensor, ...]:
+        return tuple([self.transform(t) for t in self.dataset[item]])
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    @property
+    def sample_rate(self) -> int:
+        return self.dataset.sample_rate
+
+
+class ResampleDataset(SeparationDataset):
+    def __init__(self, dataset: SeparationDataset, new_sample_rate: int):
+        self.new_sample_rate = new_sample_rate if new_sample_rate is not None else dataset.sample_rate
+        self.transform = torchaudio.transforms.Resample(
+            orig_freq=dataset.sample_rate,
+            new_freq=new_sample_rate,
+        )
+        self.dataset = dataset
+
+    def __getitem__(self, item) -> Tuple[torch.Tensor, ...]:
+        return tuple([self.transform(t) for t in self.dataset[item]])
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    @property
+    def sample_rate(self) -> int:
+        return self.new_sample_rate
+    
+
+
+class SupervisedDataset(SeparationDataset):
     def __init__(
         self,
-        instrument_1_audio_dir: Union[str, Path],
-        instrument_2_audio_dir: Union[str, Path],
+        audio_dir: Union[str, Path],
+        stems: List[str],
         sample_rate: int,
-        sample_eps: int = 2000
+        sample_eps_in_sec: int = 0.05
     ):
         super().__init__()
         self.sr = sample_rate
-        self.sample_eps = sample_eps
+        self.sample_eps = round(sample_eps_in_sec * sample_rate)
 
         # Load list of files and starts/durations
-        self.dir_1 = Path(instrument_1_audio_dir)
-        self.dir_2 = Path(instrument_2_audio_dir)
-        dir_1_files = librosa.util.find_files(str(self.dir_1))
-        dir_2_files = librosa.util.find_files(str(self.dir_2))
-
-        # get filenames
-        dir_1_files = set(sorted([Path(f).name for f in dir_1_files]))
-        dir_2_files = set(sorted([Path(f).name for f in dir_2_files]))
-        self.filenames = list(sorted(dir_1_files.intersection(dir_2_files)))
-
-        if len(self.filenames) != len(dir_1_files):
-            unused_tracks = len(dir_1_files.difference(self.filenames))
-            warnings.warn(f"Not using all available tracks in {self.dir_1} ({unused_tracks})")
-
-        if len(self.filenames) != len(dir_2_files):
-            unused_tracks = len(dir_2_files.difference(self.filenames))
-            warnings.warn(f"Not using all available tracks in {self.dir_2} ({unused_tracks})")
+        self.audio_dir = Path(audio_dir)
+        self.tracks = sorted(os.listdir(self.audio_dir))
+        self.stems = stems
+        
+        #TODO: add check if stem is never present in any track
 
     def __len__(self):
         return len(self.filenames)
 
-    def get_tracks(self, filename: str) -> Tuple[torch.Tensor, ...]:
-        assert filename in self.filenames
-        tracks = load_audio_tracks(
-            paths=[self.dir_1 / filename, self.dir_2 / filename],
-            sample_rate=self.sr,
-        )
-
-        channels, samples = zip(*[t.shape for t in tracks])
-        #for c in channels:
-        #    assert c == 1
+    #@functools.lru_cache(256)
+    def get_tracks(self, track: str) -> Tuple[torch.Tensor, ...]:
+        assert track in self.tracks
+        stem_paths = {stem: self.audio_dir / track / f"{stem}.wav" for stem in self.stems}
+        stem_paths = {stem: stem_path for stem, stem_path in stem_paths.items() if stem_path.exists()}
+        assert len(stem_paths) >= 1, track
+        
+        stems_tracks = {}
+        for stem, stem_path in stem_paths.items():
+            audio_track, sr = load_audio_track(path=stem_path)
+            assert sr == self.sample_rate, f"sample rate {sr} is different from target sample rate {self.sample_rate}"
+            stems_tracks[stem] = audio_track
+                        
+        channels, samples = zip(*[t.shape for t in stems_tracks.values()])
+        
+        #TODO add assert on channels
 
         for s1, s2 in itertools.product(samples, samples):
-            assert abs(s1 - s2) <= self.sample_eps, f"{filename}: {abs(s2 - s2)}"
-            if s1 != s1:
+            assert abs(s1 - s2) <= self.sample_eps, f"{track}: {abs(s1 - s2)}"
+            if s1 != s2:
                 warnings.warn(
-                    f"The tracks with name {filename} have a different number of samples ({s1}, {s2})"
+                    f"The tracks with name {track} have a different number of samples ({s1}, {s2})"
                 )
 
         n_samples = min(samples)
-        return tuple(t[:, :n_samples] for t in tracks)
+        n_channels = channels[0]
+        stems_tracks = {s:t[:, :n_samples] for s,t in stems_tracks.items()}
+        
+        for stem in self.stems:
+            if not stem in stems_tracks:
+                stems_tracks[stem] = torch.zeros(n_channels, n_samples)
+        
+        return tuple([stems_tracks[stem] for stem in self.stems])
 
     @property
     def sample_rate(self) -> int:
         return self.sr
 
     def __getitem__(self, item):
-        return self.get_tracks(self.filenames[item])
+        return self.get_tracks(self.tracks[item])
 
 
-class ChunkedPairsDataset(TrackPairsDataset):
+class ChunkedSupervisedDataset(SupervisedDataset):
     def __init__(
         self,
-        path_1: Union[str, Path],
-        path_2: Union[str, Path],
+        audio_dir: Union[Path, str],
+        stems: List[str],
         sample_rate: int,
         max_chunk_size: int,
         min_chunk_size: int,
     ):
-        # Load list of files and starts/durations
-        super().__init__(path_1, path_2, sample_rate)
+        super().__init__(audio_dir=audio_dir, stems=stems, sample_rate=sample_rate)
 
         self.max_chunk_size = max_chunk_size
         self.available_chunk = {}
-        self.index_to_file, self.index_to_chunk = [], []
+        self.index_to_track, self.index_to_chunk = [], []
 
-        for file in self.filenames:
-            t1, t2 = self.get_tracks(file)
-            available_chunks = get_nonsilent_chunks(t1 + t2, max_chunk_size, min_chunk_size)
-            self.available_chunk[file] = available_chunks
-            self.index_to_file.extend([file] * len(available_chunks))
+        for track in self.tracks:
+            tracks = self.get_tracks(track)
+            available_chunks = get_nonsilent_chunks(sum(tracks), max_chunk_size, min_chunk_size)
+            self.available_chunk[track] = available_chunks
+            self.index_to_track.extend([track] * len(available_chunks))
             self.index_to_chunk.extend(available_chunks)
 
-        assert len(self.index_to_chunk) == len(self.index_to_file)
-
-    @functools.lru_cache(1024)
-    def load_tracks(self, filename: str) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.get_tracks(filename)
+        assert len(self.index_to_chunk) == len(self.index_to_track)
 
     def __len__(self):
-        return len(self.index_to_file)
+        return len(self.index_to_track)
 
     def get_chunk_track(self, item: int) -> str:
-        return self.index_to_file[item]
+        return self.index_to_track[item]
 
     def get_chunk_indices(self, item: int) -> Tuple[int, int]:
         ci = self.index_to_chunk[item]
@@ -269,9 +313,14 @@ class ChunkedPairsDataset(TrackPairsDataset):
 
     def __getitem__(self, item: int) -> Tuple[torch.Tensor, ...]:
         chunk_start, chunk_stop = self.get_chunk_indices(item)
-        t1, t2 = self.load_tracks(self.get_chunk_track(item))
-        t1, t2 = t1[:, chunk_start:chunk_stop], t2[:, chunk_start:chunk_stop]
-        return t1, t2
+        tracks = self.get_tracks(self.get_chunk_track(item))
+        tracks = tuple([t[:, chunk_start:chunk_stop] for t in tracks])
+        return tracks
+
+@functools.lru_cache(128)
+@torch.no_grad()
+def load_audio_track(path: Union[str, Path]) -> Tuple[torch.Tensor, int]:
+    return torchaudio.load(path)
 
 
 def load_audio_tracks(paths: List[Union[str, Path]], sample_rate: int) -> Tuple[torch.Tensor, ...]:
