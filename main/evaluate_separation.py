@@ -1,3 +1,4 @@
+from collections import defaultdict
 from pathlib import Path
 
 import museval
@@ -10,15 +11,15 @@ import numpy as np
 import torchmetrics.functional.audio as tma
 
 
-def si_snr(preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def si_snr(preds: torch.Tensor, target: torch.Tensor) -> float:
     return tma.scale_invariant_signal_noise_ratio(preds=preds.cpu(), target=target.cpu()).mean().item()
 
 
-def si_sdr(preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def si_sdr(preds: torch.Tensor, target: torch.Tensor) -> float:
     return tma.scale_invariant_signal_distortion_ratio(preds=preds.cpu(), target=target.cpu()).mean().item()
 
 
-def sdr(preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def sdr(preds: torch.Tensor, target: torch.Tensor) -> float:
      return tma.signal_distortion_ratio(preds=preds.cpu(), target=target.cpu()).mean().item()
 
 
@@ -46,50 +47,47 @@ def museval_sdr(preds: torch.Tensor, target: torch.Tensor, sample_rate: int) -> 
 
 def evaluate_data(separation_path):
     separation_folder = Path(separation_path)
-    seps1, seps2, oris1, oris2, ms = [], [], [], [], []
+    seps, oris, ms = defaultdict(list), defaultdict(list), []
 
     for chunk_folder in (list(separation_folder.glob("*"))):
-        original_tracks = [torchaudio.load(ori) for ori in sorted(list(chunk_folder.glob("ori*.wav")))]
-        separated_tracks = [torchaudio.load(sep) for sep in sorted(list(chunk_folder.glob("sep*.wav")))]
+        original_tracks_and_rate = {ori.name.split(".")[0][3:]: torchaudio.load(ori) for ori in sorted(list(chunk_folder.glob("ori*.wav")))}
+        separated_tracks_and_rate = {sep.name.split(".")[0][3:]: torchaudio.load(sep) for sep in sorted(list(chunk_folder.glob("sep*.wav")))}
+        assert tuple(original_tracks_and_rate.keys()) == tuple(separated_tracks_and_rate.keys())
 
-        original_tracks, sample_rates_ori = zip(*original_tracks)
-        separated_tracks, sample_rates_sep = zip(*separated_tracks)
+        original_tracks = {k:t for k, (t,_) in original_tracks_and_rate.items()}
+        sample_rates_ori = [s for (_,s) in original_tracks_and_rate.values()]
+
+        separated_tracks = {k:t for k, (t,_) in separated_tracks_and_rate.items()}
+        sample_rates_sep = [s for (_,s) in separated_tracks_and_rate.values()]
 
         assert len({*sample_rates_ori, *sample_rates_sep}) == 1
-        sample_rate = sample_rates_ori[0]
-
         assert len(original_tracks) == len(separated_tracks)
-        assert len(original_tracks) == 2
-        ori1, ori2 = original_tracks
-        sep1, sep2 = separated_tracks
+        m = sum(original_tracks.values())
 
-        m = ori1 + ori2
+        #TODO: check silence
+        #if torch.amax(torch.abs(ori1)) < 1e-3 or torch.amax(torch.abs(ori2)) < 1e-3:
+        #    continue
 
-        if torch.amax(torch.abs(ori1)) < 1e-3 or torch.amax(torch.abs(ori2)) < 1e-3:
-            continue
+        for k,t in original_tracks.items():
+            oris[k].append(t)
 
-        seps1.append(sep1)
-        seps2.append(sep2)
-        oris1.append(ori1)
-        oris2.append(ori2)
+        for k,t in separated_tracks.items():
+            seps[k].append(t)
+
         ms.append(m)
 
-    seps1 = torch.stack(seps1, dim=0)
-    seps2 = torch.stack(seps2, dim=0)
-    seps = torch.stack([seps1, seps2], dim=1)
-
-    oris1 = torch.stack(oris1, dim=0)
-    oris2 = torch.stack(oris2, dim=0)
-    oris = torch.stack([oris1, oris2], dim=1)
-
+    oris = {k: torch.stack(t, dim=0) for k,t in oris.items()}
+    seps = {k: torch.stack(t, dim=0) for k,t in seps.items()}
     ms = torch.stack(ms, dim=0)
-    results = {
-        "sisnr_1": si_snr(seps1, oris1),
-        "sisnr_2": si_snr(seps2, oris2),
-        "sisnri_1": si_snr(seps1, oris1) - si_snr(ms, oris1),
-        "sisnri_2": si_snr(seps2, oris2) - si_snr(ms, oris2),
-        "sdr": sdr(seps, oris),
-    }
+
+    # results = {
+    #     "sisnr_1": si_snr(seps1, oris1),
+    #     "sisnr_2": si_snr(seps2, oris2),
+    #     "sisnri_1": si_snr(seps1, oris1) - si_snr(ms, oris1),
+    #     "sisnri_2": si_snr(seps2, oris2) - si_snr(ms, oris2),
+    #     "sdr": sdr(seps, oris),
+    # }
+    results = {f"SISNRi_{k}": si_snr(seps[k], oris[k]) - si_snr(ms, oris[k]) for k in oris}
     return results
 
     #print("SI-SNR 1: ", si_snr(seps1, oris1))
