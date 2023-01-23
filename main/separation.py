@@ -140,6 +140,45 @@ def separate_mixture(
     
     return x.cpu().detach()
 
+
+
+def separate_basis_original(
+    denoise_fns: List[Callable],
+    mixture: torch.Tensor,
+    step_lr: float = 0.00003,
+    num_steps_each: int = 100,
+):
+    num_sources = len(denoise_fns)
+    xs = []
+    for _ in range(num_sources):
+        xs.append(torch.nn.Parameter(torch.Tensor(*mixture.shape).uniform_()).cuda())
+
+    # Noise amounts
+    sigmas = np.array(
+        [1., 0.59948425, 0.35938137, 0.21544347, 0.12915497, 0.07742637, 0.04641589, 0.02782559, 0.01668101, 0.01]
+    )
+
+    for idx, sigma in enumerate(sigmas):
+        lambda_recon = 1. / (sigma ** 2)
+        step_size = step_lr * (sigma / sigmas[-1]) ** 2
+
+        for step in range(num_steps_each):
+            noises = []
+            for _ in range(num_sources):
+                noises.append(torch.randn_like(xs[0]) * np.sqrt(step_size * 2))
+
+            grads = []
+            for i, fn in enumerate(denoise_fns):
+                grad_logp = (fn(xs[i], sigma=sigma) - xs[i]) / sigma**2
+                grads.append(grad_logp.detach())
+
+            recon_loss = torch.norm(torch.flatten(sum(xs) - mixture)) ** 2
+            recon_grads = torch.autograd.grad(recon_loss, xs)
+
+            for i in range(num_sources):
+                xs[i] = xs[i] + step_size * grads[i] + (-step_size * lambda_recon * recon_grads[i].detach()) + noises[i]
+
+    return [torch.clamp(xs[i], -1.0, 1.0).detach().cpu() for i in range(num_sources)]
 # -----------------------------------------------------------------------------
 
 
