@@ -1,14 +1,19 @@
 from collections import defaultdict
+import json
 from pathlib import Path
+from pathlib import Path
+import re
+from typing import Mapping, Union
 
+import numpy as np
 import museval
+import pandas as pd
 import tqdm
-
 import torch
 import torchaudio
-import numpy as np
-
 import torchmetrics.functional.audio as tma
+from evaluation.evaluate_separation import evaluate_data
+from tqdm import tqdm
 
 
 def si_snr(preds: torch.Tensor, target: torch.Tensor) -> float:
@@ -80,21 +85,33 @@ def evaluate_data(separation_path):
     seps = {k: torch.stack(t, dim=0) for k,t in seps.items()}
     ms = torch.stack(ms, dim=0)
 
-    # results = {
-    #     "sisnr_1": si_snr(seps1, oris1),
-    #     "sisnr_2": si_snr(seps2, oris2),
-    #     "sisnri_1": si_snr(seps1, oris1) - si_snr(ms, oris1),
-    #     "sisnri_2": si_snr(seps2, oris2) - si_snr(ms, oris2),
-    #     "sdr": sdr(seps, oris),
-    # }
     results = {f"SISNRi_{k}": si_snr(seps[k], oris[k]) - si_snr(ms, oris[k]) for k in oris}
     return results
 
-    #print("SI-SNR 1: ", si_snr(seps1, oris1))
-    #print("SI-SNR 2: ", si_snr(seps2, oris2))
-    #print("SI-SNRi 1: ", si_snr(seps1, oris1) - si_snr(ms, oris1))
-    #print("SI-SNRi 2: ", si_snr(seps2, oris2) - si_snr(ms, oris2))
-    #print("SDR mean: ", sdr(seps, oris))
 
-#if __name__ == "__main__":
-#    evaluate_separation()
+#@click.command()
+#@click.argument("sep_dir")
+#@click.argument("output_file")
+def read_ablation_results(sep_dir: Union[str, Path], output_file: Union[str, Path]):
+    sep_dir = Path(sep_dir)
+    output_file = Path(output_file)
+
+    hparams_files = list(sep_dir.glob("*.json"))
+    records = []
+    for hparam_path in tqdm(hparams_files):
+        with open(hparam_path, "r") as f:
+            hparams = json.load(f)
+            assert isinstance(hparams, Mapping), type(hparams)
+
+            match = re.fullmatch(
+                "experiment-(?P<exp_num>[0-9]*)-hparams.json", hparam_path.name
+            )
+            assert match is not None
+            experiment_number = match.groupdict()["exp_num"]
+            experiment_dir = sep_dir / f"experiment-{experiment_number}"
+            # print(experiment_dir)
+            hparams_results = evaluate_data(experiment_dir)
+            records.append({**hparams, **hparams_results})
+
+    df = pd.DataFrame.from_records(records)
+    df.to_csv(output_file)
