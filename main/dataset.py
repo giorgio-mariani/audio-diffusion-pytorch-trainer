@@ -219,7 +219,7 @@ class SupervisedDataset(SeparationDataset):
         audio_dir: Union[str, Path],
         stems: List[str],
         sample_rate: int,
-        sample_eps_in_sec: int = 0.05
+        sample_eps_in_sec: int = 0.1
     ):
         super().__init__()
         self.sr = sample_rate
