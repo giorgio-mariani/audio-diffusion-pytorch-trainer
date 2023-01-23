@@ -13,7 +13,7 @@ import numpy as np
 
 from main.dataset import ResampleDataset, SeparationDataset, ChunkedSupervisedDataset, SeparationSubset, TransformDataset
 from main.separation import IndependentSeparator, ContextualSeparator, separate_dataset, differential_with_dirac, differential_with_gaussian
-from misc import load_model, load_audio
+from script.misc import load_model, load_audio
 from pathlib import Path
 
 ROOT_PATH = Path(__file__).parent.parent.resolve().absolute()
@@ -197,5 +197,61 @@ def main(output_dir: Union[str, Path]):
     )
 
 
+@torch.no_grad()
+def weakly_slakh(output_dir: Union[str, Path]):
+    output_dir = Path(output_dir)
+    device = torch.device("cuda:0")
+
+    dataset = ChunkedSupervisedDataset(
+        audio_dir="/data/Slakh_supervised/test",
+        stems=["bass", "drums", "guitar", "piano"],
+        sample_rate=44100,
+        max_chunk_size=262144 * 2,
+        min_chunk_size=262144 * 2,
+    )
+
+    resampled_dataset = ResampleDataset(dataset=dataset, new_sample_rate=22050)
+
+    model_bass = load_model("/data/ckpts/bass_epoch=14236.ckpt", device)
+    model_guitar = load_model("/data/ckpts/guitar_epoch=6098.ckpt", device)
+    model_drums = load_model("/data/ckpts/drums_epoch=933.ckpt", device)
+    model_piano = load_model("/data/ckpts/piano_epoch=880.ckpt", device)
+
+    separator = IndependentSeparator(
+        stem_to_model={
+            "bass": model_bass,
+            "drums": model_drums,
+            "guitar": model_guitar,
+            "piano": model_piano,
+        },
+        sigma_schedule=KarrasSchedule(sigma_min=1e-4, sigma_max=1.0, rho=7.0),
+        s_churn=40.0,
+    )
+
+    chunk_data = []
+    for i in range(len(dataset)):
+        start_sample, end_sample = dataset.get_chunk_indices(i)
+        chunk_data.append(
+            {
+                "chunk_index": i,
+                "track": dataset.get_chunk_track(i),
+                "start_chunk_sample": start_sample,
+                "end_chunk_sample": end_sample,
+                "start_chunk_seconds": start_sample / 44100,
+                "end_chunk_in_seconds": end_sample / 44100,
+            }
+        )
+
+    separate_dataset(
+        dataset=resampled_dataset,
+        separator=separator,
+        save_path=output_dir,
+        num_steps=200,
+    )
+
+    with open(output_dir / "chunk_data.json", "w") as f:
+        json.dump(chunk_data, f)
+
+
 if __name__ == "__main__":
-    main("separation")
+    weakly_slakh("separation/weakly_dirac_all_slakh")
