@@ -6,18 +6,21 @@ import re
 from typing import Mapping, Union
 
 import numpy as np
-import museval
+#import museval
 import pandas as pd
 import tqdm
 import torch
 import torchaudio
 import torchmetrics.functional.audio as tma
-from evaluation.evaluate_separation import evaluate_data
+#from evaluation.evaluate_separation import evaluate_data
 from tqdm import tqdm
 
 
 def si_snr(preds: torch.Tensor, target: torch.Tensor) -> float:
     return tma.scale_invariant_signal_noise_ratio(preds=preds.cpu(), target=target.cpu()).mean().item()
+
+def si_snr_unreduced(preds: torch.Tensor, target: torch.Tensor) -> float:
+    return tma.scale_invariant_signal_noise_ratio(preds=preds.cpu(), target=target.cpu())
 
 
 def si_sdr(preds: torch.Tensor, target: torch.Tensor) -> float:
@@ -25,7 +28,7 @@ def si_sdr(preds: torch.Tensor, target: torch.Tensor) -> float:
 
 
 def sdr(preds: torch.Tensor, target: torch.Tensor) -> float:
-     return tma.signal_distortion_ratio(preds=preds.cpu(), target=target.cpu()).mean().item()
+     return tma.signal_distortion_ratio(preds=preds.cpu(), target=target.cpu())#.mean().item()
 
 
 def museval_sdr(preds: torch.Tensor, target: torch.Tensor, sample_rate: int) -> float:
@@ -50,9 +53,15 @@ def museval_sdr(preds: torch.Tensor, target: torch.Tensor, sample_rate: int) -> 
     return sum(batch_sdr) / batch_size
 
 
-def evaluate_data(separation_path):
+def get_rms(source_waveforms):
+  """Return shape (source,) weights for signals that are nonzero."""
+  return torch.sqrt(torch.mean(source_waveforms ** 2, dim=-1))
+  #return source_norms <= 1e-8
+
+
+def evaluate_data(separation_path, filter_silence: bool = True):
     separation_folder = Path(separation_path)
-    seps, oris, ms = defaultdict(list), defaultdict(list), []
+    seps, oris, ori_rms, ms = defaultdict(list), defaultdict(list), defaultdict(list), []
 
     for chunk_folder in (list(separation_folder.glob("*"))):
         original_tracks_and_rate = {ori.name.split(".")[0][3:]: torchaudio.load(ori) for ori in sorted(list(chunk_folder.glob("ori*.wav")))}
@@ -69,11 +78,10 @@ def evaluate_data(separation_path):
         assert len(original_tracks) == len(separated_tracks)
         m = sum(original_tracks.values())
 
-        #TODO: check silence
-        #if torch.amax(torch.abs(ori1)) < 1e-3 or torch.amax(torch.abs(ori2)) < 1e-3:
-        #    continue
-
         for k,t in original_tracks.items():
+            rms = get_rms(t)
+            if rms <= 1e-8 and filter_silence:
+                t[:] = torch.nan
             oris[k].append(t)
 
         for k,t in separated_tracks.items():
@@ -85,14 +93,12 @@ def evaluate_data(separation_path):
     seps = {k: torch.stack(t, dim=0) for k,t in seps.items()}
     ms = torch.stack(ms, dim=0)
 
-    results = {f"SISNRi_{k}": si_snr(seps[k], oris[k]) - si_snr(ms, oris[k]) for k in oris}
-    return results
+    results = {f"SISNRi_{k}": (si_snr_unreduced(seps[k], oris[k]) - si_snr_unreduced(ms, oris[k])).view(-1).tolist() for k in oris}
+    #results = {f"SISNRi_{k}": (si_snr_unreduced(seps[k], oris[k])).view(-1).tolist() for k in oris}
+    df = pd.DataFrame(results).mean()
+    return df.to_dict()
 
-
-#@click.command()
-#@click.argument("sep_dir")
-#@click.argument("output_file")
-def read_ablation_results(sep_dir: Union[str, Path], output_file: Union[str, Path]):
+def read_ablation_results(sep_dir: Union[str, Path], filter_silence: bool = True):
     sep_dir = Path(sep_dir)
     output_file = Path(output_file)
 
@@ -110,8 +116,7 @@ def read_ablation_results(sep_dir: Union[str, Path], output_file: Union[str, Pat
             experiment_number = match.groupdict()["exp_num"]
             experiment_dir = sep_dir / f"experiment-{experiment_number}"
             # print(experiment_dir)
-            hparams_results = evaluate_data(experiment_dir)
+            hparams_results = evaluate_data(experiment_dir, filter_silence=filter_silence)
             records.append({**hparams, **hparams_results})
 
-    df = pd.DataFrame.from_records(records)
-    df.to_csv(output_file)
+    return pd.DataFrame.from_records(records)
