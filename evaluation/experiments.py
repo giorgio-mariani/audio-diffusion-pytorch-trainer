@@ -78,9 +78,9 @@ class DummyDataset(SeparationDataset):
         return self._sr
 
 
-def load_musdb_for_eval(musdb_path: Path, num_chunks: int) -> SeparationDataset:
+def load_musdb_for_eval(musdb_path: Union[Path,str], num_chunks: int) -> SeparationDataset:
     dataset = ChunkedSupervisedDataset(
-        stems=[],
+        stems=["bass", "drums", "other", "vocals"],
         audio_dir=musdb_path,
         sample_rate=44100, 
         max_chunk_size=262144 * 2, 
@@ -102,7 +102,7 @@ def load_musdb_for_eval(musdb_path: Path, num_chunks: int) -> SeparationDataset:
     return SeparationSubset(dataset, indices=indices)
 
     
-def load_slakh_for_eval(slakh_path: Path, num_chunks: int):
+def load_slakh_for_eval(slakh_path: Union[Path,str], num_chunks: int):
     dataset = ChunkedSupervisedDataset(
         audio_dir=slakh_path,
         stems=["bass", "drums", "guitar", "piano"],
@@ -150,53 +150,67 @@ def separator_factory(separator, **kwargs):
     )
     
 @torch.no_grad()
-def main(output_dir: Union[str, Path]):
+def main(output_dir: Union[str, Path], use_musdb: bool = True):
     output_dir = Path(output_dir)
     device = torch.device("cuda:0")
-    dataset = load_slakh_for_eval("data/slakh_supervised/test", num_chunks=30)
-    #irene_ckpt_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts/")
-    
-    #model_bass = load_model(ROOT_PATH / "logs/ckpts/logical-butterfly-181_epoch=11447_loss=0.005.ckpt", device)
-    #model_guitar = load_model(ROOT_PATH / "logs/ckpts/radiant-wind-181_epoch=4666_loss=0.014.ckpt", device)
-    #model_drums = load_model(irene_ckpt_path / "drums_slack.ckpt", device)
-    #model_piano = load_model(irene_ckpt_path / "piano_slack.ckpt", device)
-    model_context = load_context(ROOT_PATH / "logs/ckpts/all_slakh_epoch=419.ckpt", device, 4)
+
+    if not use_musdb:
+        dataset = load_slakh_for_eval("/home/giorgio_mariani/audio-diffusion-pytorch-trainer/data/Slakh/test", num_chunks=30)
+        irene_ckpt_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts/")
+        dataset_name = "Slakh"
+
+        model_bass = load_model(ROOT_PATH / "logs/ckpts/logical-butterfly-181_epoch=11447_loss=0.005.ckpt", device)
+        model_guitar = load_model(ROOT_PATH / "logs/ckpts/radiant-wind-181_epoch=4666_loss=0.014.ckpt", device)
+        model_drums = load_model(irene_ckpt_path / "drums_slack.ckpt", device)
+        model_piano = load_model(irene_ckpt_path / "piano_slack.ckpt", device)
+        stem_to_model={
+                "bass": model_bass, 
+                "drums": model_drums, 
+                "guitar": model_guitar, 
+                "piano": model_piano,
+            }
+
+    else:
+        dataset = load_musdb_for_eval("/home/irene/Documents/audio-diffusion-pytorch-trainer/data/MusDB/test", num_chunks=30)
+        dataset_name = "MusDB"
+        ckpts_path = ROOT_PATH / "data"
+        model_bass = load_model(ckpts_path / "rustful-dust-117_epoch=19999-loss=0.026.ckpt", device)
+        model_vocals = load_model(ckpts_path / "royal-breeze-162_epoch=29142_loss=0.138.ckpt", device)
+        model_drums = load_model(ckpts_path / "usual-frost-113_epoch=10571-loss=0.200.ckpt", device)
+        model_other = load_model(ckpts_path / "copper-wood-169_epoch=28571-valid_loss=0.206.ckpt", device)
+        stem_to_model={
+                "bass": model_bass, 
+                "drums": model_drums, 
+                "other": model_other, 
+                "vocals": model_vocals,
+            }
     
     hparams = {
         "sigma_min": [1e-4],
-        "sigma_max": [1.0],
+        "sigma_max": [20.0],
         "rho": [7],
-        "s_churn": [20.0],
+        "s_churn": [40.0],
         "num_steps": [150],
+        "use_heun": [False],
     }
     
     sep_factory = functools.partial(
         separator_factory,
-        separator=functools.partial(
-            ContextualSeparator,
-            #stem_to_model={
-            #    "bass": model_bass,
-            #    "drums": model_drums,
-            #    "guitar": model_guitar,
-            #    "piano": model_piano,
-            #}
-            stems=["bass", "drums", "guitar", "piano"],
-            model=model_context
-        )
+        separator=functools.partial(IndependentSeparator, stem_to_model)
     )
     
-    #hparams_search(
-    #    dataset,
-    #    sep_factory,
-    #    hparams={"likelihood": ["dirac"], "source_id": [0,1,2,3],**hparams},
-    #    save_path=output_dir / "context_slakh_dirac_22050_source",
-    #)
+    hparams_search(
+        dataset, 
+        sep_factory, 
+        hparams={"likelihood": ["dirac"], "source_id": [0,1,2,3],**hparams}, 
+        save_path=output_dir / f"weak_{dataset_name}_dirac_22050_source",
+    )
 
     hparams_search(
-        dataset,
-        sep_factory,
-        hparams={"likelihood": ["gaussian"], "gamma_coeff": [0.06, 0.125, 0.3725], **hparams},
-        save_path=output_dir / "context_slakh_gaussian_22050_gamma_2",
+        dataset, 
+        sep_factory, 
+        hparams={"likelihood": ["gaussian"], "gamma_coeff": [0.25, 0.5, 0.75, 1.0], **hparams}, 
+        save_path=output_dir / f"weak_{dataset_name}_gaussian_22050_gamma",
     )
 
 
@@ -257,4 +271,4 @@ def weakly_slakh(output_dir: Union[str, Path]):
 
 
 if __name__ == "__main__":
-    weakly_slakh("separation/weakly_dirac_all_slakh")
+    main("separation")
