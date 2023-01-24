@@ -317,7 +317,7 @@ class ChunkedSupervisedDataset(SupervisedDataset):
         tracks = tuple([t[:, chunk_start:chunk_stop] for t in tracks])
         return tracks
 
-@functools.lru_cache(128)
+#@functools.lru_cache(128)
 @torch.no_grad()
 def load_audio_track(path: Union[str, Path]) -> Tuple[torch.Tensor, int]:
     return torchaudio.load(path)

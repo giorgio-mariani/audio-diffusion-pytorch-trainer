@@ -13,7 +13,7 @@ import numpy as np
 
 from main.dataset import ResampleDataset, SeparationDataset, ChunkedSupervisedDataset, SeparationSubset, TransformDataset
 from main.separation import IndependentSeparator, ContextualSeparator, separate_dataset, differential_with_dirac, differential_with_gaussian
-from script.misc import load_model, load_audio
+from script.misc import load_model, load_audio, load_context
 from pathlib import Path
 
 ROOT_PATH = Path(__file__).parent.parent.resolve().absolute()
@@ -106,9 +106,9 @@ def load_slakh_for_eval(slakh_path: Path, num_chunks: int):
     dataset = ChunkedSupervisedDataset(
         audio_dir=slakh_path,
         stems=["bass", "drums", "guitar", "piano"],
-        sample_rate=44100, 
-        max_chunk_size=262144 * 2, 
-        min_chunk_size=262144 * 2,
+        sample_rate=44100,
+        max_chunk_size=262144*2,
+        min_chunk_size=262144*2,
     )
 
     dataset = ResampleDataset(dataset=dataset, new_sample_rate=22050)
@@ -153,47 +153,50 @@ def separator_factory(separator, **kwargs):
 def main(output_dir: Union[str, Path]):
     output_dir = Path(output_dir)
     device = torch.device("cuda:0")
-    dataset = load_slakh_for_eval("/home/giorgio_mariani/audio-diffusion-pytorch-trainer/data/Slakh/test", num_chunks=30)
-    irene_ckpt_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts/")
+    dataset = load_slakh_for_eval("data/slakh_supervised/test", num_chunks=30)
+    #irene_ckpt_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts/")
     
-    model_bass = load_model(ROOT_PATH / "logs/ckpts/logical-butterfly-181_epoch=11447_loss=0.005.ckpt", device)
-    model_guitar = load_model(ROOT_PATH / "logs/ckpts/radiant-wind-181_epoch=4666_loss=0.014.ckpt", device)
-    model_drums = load_model(irene_ckpt_path / "drums_slack.ckpt", device)
-    model_piano = load_model(irene_ckpt_path / "piano_slack.ckpt", device)
+    #model_bass = load_model(ROOT_PATH / "logs/ckpts/logical-butterfly-181_epoch=11447_loss=0.005.ckpt", device)
+    #model_guitar = load_model(ROOT_PATH / "logs/ckpts/radiant-wind-181_epoch=4666_loss=0.014.ckpt", device)
+    #model_drums = load_model(irene_ckpt_path / "drums_slack.ckpt", device)
+    #model_piano = load_model(irene_ckpt_path / "piano_slack.ckpt", device)
+    model_context = load_context(ROOT_PATH / "logs/ckpts/all_slakh_epoch=419.ckpt", device, 4)
     
     hparams = {
         "sigma_min": [1e-4],
-        "sigma_max": [1.0, 20.0, 40.0],
+        "sigma_max": [1.0],
         "rho": [7],
-        "s_churn": [0, 1.0, 20.0, 40.0],
+        "s_churn": [20.0],
         "num_steps": [150],
     }
     
     sep_factory = functools.partial(
         separator_factory,
         separator=functools.partial(
-            IndependentSeparator,
-            stem_to_model={
-                "bass": model_bass, 
-                "drums": model_drums, 
-                "guitar": model_guitar, 
-                "piano": model_piano,
-            }
+            ContextualSeparator,
+            #stem_to_model={
+            #    "bass": model_bass,
+            #    "drums": model_drums,
+            #    "guitar": model_guitar,
+            #    "piano": model_piano,
+            #}
+            stems=["bass", "drums", "guitar", "piano"],
+            model=model_context
         )
     )
     
-    hparams_search(
-        dataset, 
-        sep_factory, 
-        hparams={"likelihood": ["dirac"], "source_id": [3],**hparams}, 
-        save_path=output_dir / "weak_slakh_dirac_22050",
-    )
+    #hparams_search(
+    #    dataset,
+    #    sep_factory,
+    #    hparams={"likelihood": ["dirac"], "source_id": [0,1,2,3],**hparams},
+    #    save_path=output_dir / "context_slakh_dirac_22050_source",
+    #)
 
     hparams_search(
-        dataset, 
-        sep_factory, 
-        hparams={"likelihood": ["gaussian"], "gamma_coeff": [0.66], **hparams}, 
-        save_path=output_dir / "weak_slakh_gaussian_22050",
+        dataset,
+        sep_factory,
+        hparams={"likelihood": ["gaussian"], "gamma_coeff": [0.06, 0.125, 0.3725], **hparams},
+        save_path=output_dir / "context_slakh_gaussian_22050_gamma_2",
     )
 
 

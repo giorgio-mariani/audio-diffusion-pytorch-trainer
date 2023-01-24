@@ -47,6 +47,12 @@ def load_model(path: str, device: str) -> main.module_base.Model:
     model_1.to(device)
     return model_1
 
+def load_context(path: str, device: str, num_sources: int) -> main.module_base.Model:
+    model = main.module_base.Model(**{**hparams, "in_channels": num_sources})
+    model.load_state_dict(torch.load(path)["state_dict"])
+    model.to(device)
+    return model
+
 
 def load_audio(path: str, sample_rate: int, start: int = 0, end: int = -1):
     s1, sr1 = ta.load(path)
