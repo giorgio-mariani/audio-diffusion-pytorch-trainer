@@ -12,7 +12,7 @@ import tqdm
 import torch
 import torchaudio
 import torchmetrics.functional.audio as tma
-from evaluation.evaluate_separation import evaluate_data
+#from evaluation.evaluate_separation import evaluate_data
 from tqdm import tqdm
 
 

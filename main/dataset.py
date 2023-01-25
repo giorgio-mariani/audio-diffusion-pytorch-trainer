@@ -427,6 +427,7 @@ class TimeStretch(nn.Module):
 TimeShift = TimeStretch
 
 
+@torch.no_grad()
 class PitchShift(nn.Module):
     def __init__(
             self,

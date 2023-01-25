@@ -44,8 +44,29 @@ class ContextualSeparator(Separator):
             noises=torch.randn(batch_size, len(self.stems), length_samples).to(device),
             **self.separation_kwargs,
         )
-        return {stem:y[:,i:i+1,:] for i,stem in enumerate(self.stems)}
+        return {stem:y[:,i,:] for i,stem in enumerate(self.stems)}
 
+    def separate_with_hint(
+        self,
+        mixture: torch.Tensor,
+        source_with_hint: torch.Tensor,
+        mask: torch.Tensor,
+        num_steps:int = 100
+        ):
+        
+        device = self.model.device
+        mixture = mixture.to(device)
+
+        y = inpaint_mixture(
+            source = source_with_hint,
+            mask = mask,
+            mixture = mixture,
+            fn = self.model.model.diffusion.denoise_fn,
+            sigmas = self.sigma_schedule(num_steps, device),
+            num_resamples = 3,
+        )
+
+        return {stem:y[:,i:i+1,:] for i,stem in enumerate(self.stems)}
 
 class IndependentSeparator(Separator):
     def __init__(self, stem_to_model: Mapping[str, Model], sigma_schedule, **kwargs):
@@ -110,35 +131,86 @@ def separate_mixture(
     sigmas: torch.Tensor,
     noises: Optional[torch.Tensor],
     differential_fn: Callable = differential_with_dirac,
-    s_churn: float = 0.0, # > 0 to add randomness
+    s_churn: float = 20.0, # > 0 to add randomness
     use_heun: bool = False,
 ):      
     # Set initial noise
     x = sigmas[0] * noises # [batch_size, num-sources, sample-length]
     
     for i in range(len(sigmas) - 1):
-        sigma, sigma_next = sigmas[i], sigmas[i+1]
-
-        # Inject randomness
-        gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1)
-        sigma_hat = sigma * (gamma + 1)            
-        x_hat = x + torch.randn_like(x) * (sigma_hat ** 2 - sigma ** 2) ** 0.5
-
-        # Compute conditioned derivative
-        d = differential_fn(mixture=mixture, x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn)
-
-        # Update integral
-        if not use_heun or sigma_next == 0.0:
-            # Euler method
-            x = x_hat + d * (sigma_next - sigma_hat) 
-        else:
-            # Heun's method
-            x_2 = x_hat + d * (sigma_next - sigma_hat)
-            d_2 = differential_fn(mixture=mixture, x=x_2, sigma=sigma_next, denoise_fn=denoise_fn)
-            d_prime = (d + d_2) / 2
-            x = x + d_prime * (sigma_next - sigma_hat)
+        x = step(
+            x,
+            i,
+            mixture, 
+            denoise_fn,
+            sigmas,
+            differential_fn,
+            s_churn,
+            use_heun,
+        )
     
     return x.cpu().detach()
+
+
+@torch.no_grad()
+def step(
+    x: torch.Tensor,
+    i: int,
+    mixture: torch.Tensor, 
+    denoise_fn: Callable,
+    sigmas: torch.Tensor,
+    differential_fn: Callable = differential_with_dirac,
+    s_churn: float = 0.0, # > 0 to add randomness
+    use_heun: bool = False,
+):      
+    sigma, sigma_next = sigmas[i], sigmas[i+1]
+
+    # Inject randomness
+    gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1)
+    sigma_hat = sigma * (gamma + 1)            
+    x_hat = x + torch.randn_like(x) * (sigma_hat ** 2 - sigma ** 2) ** 0.5
+
+    # Compute conditioned derivative
+    d = differential_fn(mixture=mixture, x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn)
+
+    # Update integral
+    if not use_heun or sigma_next == 0.0:
+        # Euler method
+        x = x_hat + d * (sigma_next - sigma_hat) 
+    else:
+        # Heun's method
+        x_2 = x_hat + d * (sigma_next - sigma_hat)
+        d_2 = differential_fn(mixture=mixture, x=x_2, sigma=sigma_next, denoise_fn=denoise_fn)
+        d_prime = (d + d_2) / 2
+        x = x + d_prime * (sigma_next - sigma_hat)
+    return x
+
+
+@torch.no_grad()
+def inpaint_mixture(
+    source: Tensor,
+    mask: Tensor,
+    mixture: Tensor,
+    fn: Callable,
+    sigmas: Tensor,
+    num_resamples: int,
+) -> Tensor:
+    x = sigmas[0] * torch.randn_like(source)
+
+    for i in range(len(sigmas) - 1):
+        # Noise source to current noise level
+        source_noisy = source + sigmas[i] * torch.randn_like(source)
+        for r in range(num_resamples):
+            # Merge noisy source and current then denoise
+            x = source_noisy * mask + x * mask.logical_not().float()
+            x = step(x, i, mixture=mixture, denoise_fn=fn, 
+                    sigmas=sigmas, s_churn=20.0)  # type: ignore # noqa
+            # Renoise if not last resample step
+            if r < num_resamples - 1:
+                sigma = sqrt(sigmas[i] ** 2 - sigmas[i + 1] ** 2)
+                x = x + sigma * torch.randn_like(x)
+
+    return source * mask + x * mask.logical_not().float()
 
 
 
