@@ -8,7 +8,6 @@ from typing import Mapping, Union
 import numpy as np
 #import museval
 import pandas as pd
-import tqdm
 import torch
 import torchaudio
 import torchmetrics.functional.audio as tma
@@ -100,7 +99,6 @@ def evaluate_data(separation_path, filter_silence: bool = True):
 
 def read_ablation_results(sep_dir: Union[str, Path], filter_silence: bool = True):
     sep_dir = Path(sep_dir)
-    output_file = Path(output_file)
 
     hparams_files = list(sep_dir.glob("*.json"))
     records = []
