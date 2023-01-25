@@ -188,11 +188,12 @@ def separate_dataset(
     separator: Separator,
     num_steps: int,
     save_path: str = "evaluation_results",
+    resume: bool = False
 ):
 
     # convert paths
     save_path = Path(save_path)
-    if save_path.exists() and not len(list(save_path.glob("*"))) == 0:
+    if not resume and save_path.exists() and not len(list(save_path.glob("*"))) == 0:
         raise ValueError(f"Path {save_path} already exists!")
 
     # get samples
@@ -201,6 +202,10 @@ def separate_dataset(
     # main loop
     save_path.mkdir(exist_ok=True)
     for batch_idx, batch in enumerate(tqdm.tqdm(loader)):
+        chunk_path = save_path / f"{batch_idx}"
+        if chunk_path.exists():
+            print(f"Skipping path: {chunk_path}")
+            continue
 
         # load audio tracks
         tracks = batch
@@ -209,8 +214,6 @@ def separate_dataset(
         # generate mixture
         mixture = sum(tracks)
         seps = separator.separate(mixture=mixture, num_steps=num_steps)
-
-        chunk_path = save_path / f"{batch_idx}"
         chunk_path.mkdir(parents=True)
 
         # save separated audio
@@ -220,6 +223,7 @@ def separate_dataset(
             sample_rate=dataset.sample_rate,
             chunk_path=chunk_path,
         )
+        del seps, tracks
 
 
 def save_separation(
