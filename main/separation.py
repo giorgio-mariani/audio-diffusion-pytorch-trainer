@@ -56,6 +56,7 @@ class ContextualSeparator(Separator):
         
         device = self.model.device
         mixture = mixture.to(device)
+        batch_size, _, length_samples = mixture.shape
 
         y = inpaint_mixture(
             source = source_with_hint,
@@ -63,7 +64,8 @@ class ContextualSeparator(Separator):
             mixture = mixture,
             fn = self.model.model.diffusion.denoise_fn,
             sigmas = self.sigma_schedule(num_steps, device),
-            num_resamples = 3,
+            noises=torch.randn(batch_size, len(self.stems), length_samples).to(device),
+            num_resamples = 1,
         )
 
         return {stem:y[:,i:i+1,:] for i,stem in enumerate(self.stems)}
@@ -152,6 +154,36 @@ def separate_mixture(
     return x.cpu().detach()
 
 
+def inpaint_mixture(
+    source: Tensor,
+    mask: Tensor,
+    mixture: torch.Tensor, 
+    denoise_fn: Callable,
+    sigmas: torch.Tensor,
+    noises: Optional[torch.Tensor],
+    differential_fn: Callable = differential_with_dirac,
+    s_churn: float = 20.0, # > 0 to add randomness
+    use_heun: bool = False,
+):      
+    # Set initial noise
+    x = sigmas[0] * noises # [batch_size, num-sources, sample-length]
+    
+    for i in range(len(sigmas) - 1):
+        source_noisy = source + sigmas[i] * torch.randn_like(source)
+        for r in range(num_resamples):
+            # Merge noisy source and current then denoise
+            x = source_noisy * mask + x * mask.logical_not()
+            x = step(x, i, mixture, denoise_fn, sigmas, differential_fn, s_churn, use_heun)  # type: ignore # noqa
+            # Renoise if not last resample step
+            if r < num_resamples - 1:
+                sigma = sqrt(sigmas[i] ** 2 - sigmas[i + 1] ** 2)
+                x = x + sigma * torch.randn_like(x)
+
+    return source * mask + x * mask.logical_not()
+    
+    return x.cpu().detach()
+
+
 @torch.no_grad()
 def step(
     x: torch.Tensor,
@@ -193,9 +225,12 @@ def inpaint_mixture(
     mixture: Tensor,
     fn: Callable,
     sigmas: Tensor,
+    noises: Tensor,
     num_resamples: int,
+    s_churn: float = 20.0, # > 0 to add randomness
+    use_heun: bool = False,
 ) -> Tensor:
-    x = sigmas[0] * torch.randn_like(source)
+    x = sigmas[0] * noises
 
     for i in range(len(sigmas) - 1):
         # Noise source to current noise level
