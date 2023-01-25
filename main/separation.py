@@ -51,7 +51,8 @@ class ContextualSeparator(Separator):
         mixture: torch.Tensor,
         source_with_hint: torch.Tensor,
         mask: torch.Tensor,
-        num_steps:int = 100
+        num_steps:int = 100,
+        num_resamples = 1
         ):
         
         device = self.model.device
@@ -65,10 +66,11 @@ class ContextualSeparator(Separator):
             fn = self.model.model.diffusion.denoise_fn,
             sigmas = self.sigma_schedule(num_steps, device),
             noises=torch.randn(batch_size, len(self.stems), length_samples).to(device),
-            num_resamples = 1,
+            **self.separation_kwargs,
         )
 
         return {stem:y[:,i:i+1,:] for i,stem in enumerate(self.stems)}
+
 
 class IndependentSeparator(Separator):
     def __init__(self, stem_to_model: Mapping[str, Model], sigma_schedule, **kwargs):
@@ -135,53 +137,29 @@ def separate_mixture(
     differential_fn: Callable = differential_with_dirac,
     s_churn: float = 20.0, # > 0 to add randomness
     use_heun: bool = False,
+    num_resamples: int = 1
 ):      
     # Set initial noise
     x = sigmas[0] * noises # [batch_size, num-sources, sample-length]
     
     for i in range(len(sigmas) - 1):
-        x = step(
-            x,
-            i,
-            mixture, 
-            denoise_fn,
-            sigmas,
-            differential_fn,
-            s_churn,
-            use_heun,
-        )
-    
-    return x.cpu().detach()
-
-
-def inpaint_mixture(
-    source: Tensor,
-    mask: Tensor,
-    mixture: torch.Tensor, 
-    denoise_fn: Callable,
-    sigmas: torch.Tensor,
-    noises: Optional[torch.Tensor],
-    differential_fn: Callable = differential_with_dirac,
-    s_churn: float = 20.0, # > 0 to add randomness
-    use_heun: bool = False,
-):      
-    # Set initial noise
-    x = sigmas[0] * noises # [batch_size, num-sources, sample-length]
-    
-    for i in range(len(sigmas) - 1):
-        source_noisy = source + sigmas[i] * torch.randn_like(source)
         for r in range(num_resamples):
-            # Merge noisy source and current then denoise
-            x = source_noisy * mask + x * mask.logical_not()
-            x = step(x, i, mixture, denoise_fn, sigmas, differential_fn, s_churn, use_heun)  # type: ignore # noqa
-            # Renoise if not last resample step
+            x = step(
+                x,
+                i,
+                mixture, 
+                denoise_fn,
+                sigmas,
+                differential_fn,
+                s_churn,
+                use_heun,
+            )
             if r < num_resamples - 1:
                 sigma = sqrt(sigmas[i] ** 2 - sigmas[i + 1] ** 2)
                 x = x + sigma * torch.randn_like(x)
-
-    return source * mask + x * mask.logical_not()
     
     return x.cpu().detach()
+
 
 
 @torch.no_grad()
@@ -215,6 +193,7 @@ def step(
         d_2 = differential_fn(mixture=mixture, x=x_2, sigma=sigma_next, denoise_fn=denoise_fn)
         d_prime = (d + d_2) / 2
         x = x + d_prime * (sigma_next - sigma_hat)
+    
     return x
 
 
@@ -226,7 +205,8 @@ def inpaint_mixture(
     fn: Callable,
     sigmas: Tensor,
     noises: Tensor,
-    num_resamples: int,
+    differential_fn: Callable = differential_with_dirac,
+    num_resamples: int = 1,
     s_churn: float = 20.0, # > 0 to add randomness
     use_heun: bool = False,
 ) -> Tensor:
@@ -237,15 +217,15 @@ def inpaint_mixture(
         source_noisy = source + sigmas[i] * torch.randn_like(source)
         for r in range(num_resamples):
             # Merge noisy source and current then denoise
-            x = source_noisy * mask + x * mask.logical_not().float()
+            x = source_noisy * mask + x * mask.logical_not()
             x = step(x, i, mixture=mixture, denoise_fn=fn, 
-                    sigmas=sigmas, s_churn=20.0)  # type: ignore # noqa
+                    sigmas=sigmas, s_churn=s_churn, use_heun=use_heun)  # type: ignore # noqa
             # Renoise if not last resample step
             if r < num_resamples - 1:
                 sigma = sqrt(sigmas[i] ** 2 - sigmas[i + 1] ** 2)
                 x = x + sigma * torch.randn_like(x)
 
-    return source * mask + x * mask.logical_not().float()
+    return source * mask + x * mask.logical_not()
 
 
 
@@ -322,7 +302,7 @@ def separate_dataset(
 
         # save separated audio
         save_separation(
-            separated_tracks=[sep.squeeze(0) for sep in seps.values()],
+            separated_tracks=[sep for sep in seps.values()],
             original_tracks=[track.squeeze(0) for track in tracks],
             sample_rate=dataset.sample_rate,
             chunk_path=chunk_path,
@@ -335,6 +315,9 @@ def save_separation(
     sample_rate: int,
     chunk_path: Path,
 ):
+    print([t[0].shape for t in original_tracks])
+    print([t[0].shape for t in original_tracks])
+
     assert_is_audio(*original_tracks, *separated_tracks)
     #assert original_1.shape == original_2.shape == separation_1.shape == separation_2.shape
     assert len(original_tracks) == len(separated_tracks)

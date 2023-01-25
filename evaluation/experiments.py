@@ -11,9 +11,10 @@ from torch.utils.data import Dataset
 import numpy
 import numpy as np
 
+import main.module_base
 from main.dataset import ResampleDataset, SeparationDataset, ChunkedSupervisedDataset, SeparationSubset, TransformDataset
 from main.separation import IndependentSeparator, ContextualSeparator, separate_dataset, differential_with_dirac, differential_with_gaussian
-from script.misc import load_model, load_audio
+from script.misc import load_model, load_audio, hparams
 from pathlib import Path
 
 ROOT_PATH = Path(__file__).parent.parent.resolve().absolute()
@@ -150,7 +151,7 @@ def separator_factory(separator, **kwargs):
     )
     
 @torch.no_grad()
-def main(output_dir: Union[str, Path]):
+def main_(output_dir: Union[str, Path]):
     output_dir = Path(output_dir)
     device = torch.device("cuda:0")
     dataset = load_slakh_for_eval("/home/giorgio_mariani/audio-diffusion-pytorch-trainer/data/Slakh/test", num_chunks=30)
@@ -251,7 +252,70 @@ def weakly_slakh(output_dir: Union[str, Path]):
 
     with open(output_dir / "chunk_data.json", "w") as f:
         json.dump(chunk_data, f)
+        
+
+@torch.no_grad()
+def contextual_slakh(output_dir: Union[str, Path]):
+    output_dir = Path(output_dir)
+    device = torch.device("cuda:0")
+
+    dataset = ChunkedSupervisedDataset(
+        audio_dir="/home/giorgio_mariani/audio-diffusion-pytorch-trainer/data/Slakh/test",
+        stems=["bass", "drums", "guitar", "piano"],
+        sample_rate=44100,
+        max_chunk_size=262144 * 2,
+        min_chunk_size=262144 * 2,
+    )
+
+    resampled_dataset = ResampleDataset(dataset=dataset, new_sample_rate=22050)
+    rng = numpy.random.default_rng(seed=42)
+    indices = rng.choice(
+        numpy.arange(0, len(resampled_dataset), dtype=numpy.int32), size=30, replace=False
+    ).tolist()
+    
+    resampled_dataset= SeparationSubset(resampled_dataset, indices=indices)
+
+    
+    model_path = "/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts/avid-darkness-164_epoch=419-valid_loss=0.015.ckpt"
+    model = main.module_base.Model(**{**hparams, "in_channels": 4})
+    model.load_state_dict(torch.load(model_path)["state_dict"])
+    model.to(device);
+
+    import functools
+    separator = ContextualSeparator(
+        model=model, 
+        stems=["bass", "drums", "guitar", "piano"], 
+        sigma_schedule=KarrasSchedule(sigma_min=1e-4, sigma_max=1.0, rho=7.0),
+        s_churn=20.0,
+        num_resamples=3,
+        differential_fn=functools.partial(differential_with_dirac, source_id=3),
+    )
+
+    chunk_data = []
+    for i in range(len(dataset)):
+        start_sample, end_sample = dataset.get_chunk_indices(i)
+        chunk_data.append(
+            {
+                "chunk_index": i,
+                "track": dataset.get_chunk_track(i),
+                "start_chunk_sample": start_sample,
+                "end_chunk_sample": end_sample,
+                "start_chunk_seconds": start_sample / 44100,
+                "end_chunk_in_seconds": end_sample / 44100,
+            }
+        )
+
+    separate_dataset(
+        dataset=resampled_dataset,
+        separator=separator,
+        save_path=output_dir,
+        num_steps=200,
+    )
+
+    with open(output_dir / "chunk_data.json", "w") as f:
+        json.dump(chunk_data, f)
+        
 
 
 if __name__ == "__main__":
-    weakly_slakh("separation/weakly_dirac_all_slakh")
+    contextual_slakh("separations/contextual_dirac_slakh_resample")
