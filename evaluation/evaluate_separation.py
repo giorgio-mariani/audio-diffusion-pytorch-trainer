@@ -16,41 +16,20 @@ from tqdm import tqdm
 from torchaudio.transforms import Resample
 
 
-def si_snr(preds: torch.Tensor, target: torch.Tensor) -> float:
-    return tma.scale_invariant_signal_noise_ratio(preds=preds.cpu(), target=target.cpu()).mean().item()
-
-def si_snr_unreduced(preds: torch.Tensor, target: torch.Tensor) -> float:
-    return tma.scale_invariant_signal_noise_ratio(preds=preds.cpu(), target=target.cpu())
-
-
-def si_sdr(preds: torch.Tensor, target: torch.Tensor) -> float:
-    return tma.scale_invariant_signal_distortion_ratio(preds=preds.cpu(), target=target.cpu()).mean().item()
+def sdr(preds: torch.Tensor, target: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+    s_target = torch.norm(target, dim=-1)**2 + eps
+    s_error = torch.norm(target - preds, dim=-1)**2 + eps
+    return 10 * torch.log10(s_target/s_error)
 
 
-def sdr(preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    return 10 * torch.log10((torch.norm(target, dim=-1)**2 + 1e-7)/((torch.norm(target - preds, dim=-1))**2 + 1e-7))
+def sisnr(preds: torch.Tensor, target: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+    alpha = (torch.sum(preds * target, dim=-1, keepdim=True) + eps) / (torch.sum(target**2, dim=-1, keepdim=True) + eps)
+    target_scaled = alpha * target
+    noise = target_scaled - preds
+    s_target = torch.sum(target_scaled**2, dim=-1) + eps
+    s_error = torch.sum(noise**2, dim=-1) + eps
 
-
-def museval_sdr(preds: torch.Tensor, target: torch.Tensor, sample_rate: int) -> float:
-    """"""
-    preds = preds.cpu()
-    target = target.cpu()
-    assert target.shape == preds.shape
-    batch_size, num_src, num_channels, num_samples = preds.shape
-    #target, preds = target.permute(dims=[0, 1, 3, 2]), preds.permute(dims=[0, 1, 3, 2])
-
-    batch_sdr = []
-    for i in range(batch_size):
-        t, p = target[i].permute([0, 2, 1]), preds[i].permute([0, 2, 1])
-        (
-            sdr_metric,
-            isr_metric,
-            sir_metric,
-            sar_metric,
-        ) = museval.evaluate(references=t, estimates=p, win=sample_rate, hop=sample_rate)
-        sdr_metric[sdr_metric == np.inf] = np.nan
-        batch_sdr.append(np.nanmedian(sdr_metric))
-    return sum(batch_sdr) / batch_size
+    return 10 * torch.log10(s_target / s_error)
 
 
 def get_rms(source_waveforms):
@@ -59,7 +38,7 @@ def get_rms(source_waveforms):
   #return source_norms <= 1e-8
 
 
-def load_chunks(chunk_folder: Path) -> Tuple[List[torch.Tensor], List[torch.Tensor], int]:
+def load_chunks(chunk_folder: Path) -> Tuple[Mapping[str, torch.Tensor], Mapping[str, torch.Tensor], int]:
     original_tracks_and_rate = {ori.name.split(".")[0][3:]: torchaudio.load(ori) for ori in sorted(list(chunk_folder.glob("ori*.wav")))}
     separated_tracks_and_rate = {sep.name.split(".")[0][3:]: torchaudio.load(sep) for sep in sorted(list(chunk_folder.glob("sep*.wav")))}
     assert tuple(original_tracks_and_rate.keys()) == tuple(separated_tracks_and_rate.keys())
@@ -77,7 +56,7 @@ def load_chunks(chunk_folder: Path) -> Tuple[List[torch.Tensor], List[torch.Tens
     return original_tracks, separated_tracks, sr
 
 
-def evaluate_data(separation_path, filter_silence: bool = True, batch_size: int = 512, orig_sr: int = 44100, resample_sr: Optional[int] = None):
+def evaluate_chunks(separation_path, filter_silence: bool = True, batch_size: int = 512, orig_sr: int = 44100, resample_sr: Optional[int] = None):
     print(separation_path)
     separation_folder = Path(separation_path)
     seps, oris, ms = defaultdict(list), defaultdict(list), []
@@ -128,8 +107,7 @@ def evaluate_data(separation_path, filter_silence: bool = True, batch_size: int 
     return df#.to_dict()
 
 
-def evaluate_tracks_sdr(separation_path, orig_sr: int = 44100):
-
+def evaluate_tracks(separation_path, orig_sr: int = 44100, resample_sr: Optional[int] = None):
     separation_folder = Path(separation_path)
     assert separation_folder.exists(), separation_folder
     assert (separation_folder / "chunk_data.json").exists(), separation_folder
@@ -137,16 +115,18 @@ def evaluate_tracks_sdr(separation_path, orig_sr: int = 44100):
     with open(separation_folder / "chunk_data.json") as f:
         chunk_data = json.load(f)
 
+    resample_fn = Resample(orig_freq=orig_sr, new_freq=resample_sr) if resample_sr is not None else lambda x: x
+
     track_to_chunks = defaultdict(list)
     for chunk_data in chunk_data:
         track = chunk_data["track"]
         chunk_idx = chunk_data["chunk_index"]
         start_sample = chunk_data["start_chunk_sample"]
-        start_sample_sec = chunk_data["start_chunk_seconds"]
-        assert abs(start_sample / orig_sr  - start_sample_sec) <= 1e-12, abs(start_sample / orig_sr  - start_sample_sec)
+        #start_sample_sec = chunk_data["start_chunk_seconds"]
+        #assert abs(start_sample / orig_sr  - start_sample_sec) <= 1e-12, abs(start_sample / orig_sr  - start_sample_sec)
         track_to_chunks[track].append( (start_sample, chunk_idx) )
 
-    # reorder chunks into ascending order and merge
+    # reorder chunks into ascending order and compute sdr
     track_to_sdr = {}
     for track, chunks in tqdm(track_to_chunks.items()):
         sorted_chunks = sorted(chunks)
@@ -164,15 +144,64 @@ def evaluate_tracks_sdr(separation_path, orig_sr: int = 44100):
                 original_wavs[k].append(original_tracks[k])
 
         for k in separated_wavs:
-            separated_wavs[k] = torch.cat(separated_wavs[k], dim=-1)
-            original_wavs[k] = torch.cat(original_wavs[k], dim=-1)
+            separated_wavs[k] = resample_fn(torch.cat(separated_wavs[k], dim=-1))
+            original_wavs[k] = resample_fn(torch.cat(original_wavs[k], dim=-1))
 
         mixture = sum([owav for owav in original_wavs.values()])
 
-        track_to_sdr[track] = {f"SDR_{k}": sdr(separated_wavs[k], original_wavs[k]).item() for k in separated_wavs}
-        #track_to_sdr[track] = {f"SISNRi_{k}": (si_snr_unreduced(separated_wavs[k],  original_wavs[k]) - si_snr_unreduced(mixture, original_wavs[k])).item() for k in separated_wavs}
+        #track_to_sdr[track] = {f"SDR_{k}": sdr(separated_wavs[k], original_wavs[k]).item() for k in separated_wavs}
+        track_to_sdr[track] = {f"SISNRi_{k}": (sisnr(separated_wavs[k],  original_wavs[k]) - sisnr(mixture, original_wavs[k])).item() for k in separated_wavs}
     return pd.DataFrame.from_records(track_to_sdr).transpose()
 
+
+def evaluate_tracks_chunks(separation_path, chunk_size: int, orig_sr: int = 44100, resample_sr: Optional[int] = None):
+
+    separation_folder = Path(separation_path)
+    assert separation_folder.exists(), separation_folder
+    assert (separation_folder / "chunk_data.json").exists(), separation_folder
+
+    with open(separation_folder / "chunk_data.json") as f:
+        chunk_data = json.load(f)
+
+    resample_fn = Resample(orig_freq=orig_sr, new_freq=resample_sr) if resample_sr is not None else lambda x: x
+
+    track_to_chunks = defaultdict(list)
+    for chunk_data in chunk_data:
+        track = chunk_data["track"]
+        chunk_idx = chunk_data["chunk_index"]
+        start_sample = chunk_data["start_chunk_sample"]
+        track_to_chunks[track].append( (start_sample, chunk_idx) )
+
+    # reorder chunks into ascending order and compute sdr
+    results = defaultdict(list)
+    for track, chunks in tqdm(track_to_chunks.items()):
+        sorted_chunks = sorted(chunks)
+
+        separated_wavs, original_wavs = defaultdict(list), defaultdict(list)
+        for _, chunk_idx in sorted_chunks:
+            chunk_folder = separation_folder / str(chunk_idx)
+            original_tracks, separated_tracks, sr = load_chunks(chunk_folder)
+            assert sr == orig_sr, f"chunk [{chunk_folder.name}]: expected freq={orig_sr}, track freq={sr}"
+
+            for k in separated_tracks:
+                separated_wavs[k].append(separated_tracks[k])
+                original_wavs[k].append(original_tracks[k])
+
+        original_tensors, separated_tensors = {}, {}
+        for k in separated_wavs:
+            separated_tensors[k] = resample_fn(torch.cat(separated_wavs[k], dim=-1).view(-1))
+            original_tensors[k] = resample_fn(torch.cat(original_wavs[k], dim=-1).view(-1))
+
+        mixture = sum([owav for owav in original_tensors.values()])
+
+        for i in range(mixture.shape[-1] // chunk_size):
+            for k in separated_tensors:
+                o = original_tensors[k][i*chunk_size:(i+1)*chunk_size]
+                s = separated_tensors[k][i*chunk_size: (i+1)*chunk_size]
+                m = mixture[i*chunk_size: (i+1)*chunk_size]
+                results[k].append((sisnr(s, o) - sisnr(m, o)).item())
+
+    return pd.DataFrame(results)
 
 def read_ablation_results(sep_dir: Union[str, Path], filter_silence: bool = True):
     sep_dir = Path(sep_dir)
@@ -191,7 +220,7 @@ def read_ablation_results(sep_dir: Union[str, Path], filter_silence: bool = True
             experiment_number = match.groupdict()["exp_num"]
             experiment_dir = sep_dir / f"experiment-{experiment_number}"
             # print(experiment_dir)
-            hparams_results = evaluate_data(experiment_dir, filter_silence=filter_silence)
+            hparams_results = evaluate_chunks(experiment_dir, filter_silence=filter_silence)
             records.append({**hparams, **hparams_results})
 
     return pd.DataFrame.from_records(records)
