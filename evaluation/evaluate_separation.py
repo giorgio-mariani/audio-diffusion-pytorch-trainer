@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from pathlib import Path
 import re
-from typing import Mapping, Union
+from typing import Mapping, Optional, Union
 
 import numpy as np
 #import museval
@@ -13,6 +13,7 @@ import torchaudio
 import torchmetrics.functional.audio as tma
 #from evaluation.evaluate_separation import evaluate_data
 from tqdm import tqdm
+from torchaudio.transforms import Resample
 
 
 def si_snr(preds: torch.Tensor, target: torch.Tensor) -> float:
@@ -58,12 +59,14 @@ def get_rms(source_waveforms):
   #return source_norms <= 1e-8
 
 
-def evaluate_data(separation_path, filter_silence: bool = True, batch_size: int = 512):
+def evaluate_data(separation_path, filter_silence: bool = True, batch_size: int = 512, orig_sr: int = 44100, resample_sr: Optional[int] = None):
     separation_folder = Path(separation_path)
     seps, oris, ms = defaultdict(list), defaultdict(list), []
     
     chunks = list(separation_folder.glob("*"))
     complete_results = defaultdict(list)
+
+    resample_fn = Resample(orig_freq=orig_sr, new_freq=resample_sr) if resample_sr is not None else lambda x: x
     
     for ci, chunk_folder in enumerate(tqdm(chunks)):
         if not chunk_folder.is_dir():
@@ -81,6 +84,9 @@ def evaluate_data(separation_path, filter_silence: bool = True, batch_size: int 
 
         assert len({*sample_rates_ori, *sample_rates_sep}) == 1, print({*sample_rates_ori, *sample_rates_sep})
         assert len(original_tracks) == len(separated_tracks)
+        sr = sample_rates_ori[0]
+        assert sr == orig_sr, f"chunk [{chunk_folder.name}]: expected freq={orig_sr}, track freq={sr}"
+
         m = sum(original_tracks.values())
 
         for k in original_tracks.keys():
@@ -91,15 +97,15 @@ def evaluate_data(separation_path, filter_silence: bool = True, batch_size: int 
             if rms <= 1e-8 and filter_silence:
                 ori_t[:] = torch.nan
 
+            ori_t = resample_fn(ori_t)
+            sep_t = resample_fn(sep_t)
+            
             oris[k].append(ori_t)
             seps[k].append(sep_t)
 
-        for k,t in separated_tracks.items():
-            seps[k].append(t)
-
-        ms.append(m)
+        ms.append(resample_fn(m))
         
-        if ci % batch_size == 0:
+        if (ci+1) % batch_size == 0:
             oris = {k: torch.stack(t, dim=0) for k,t in oris.items()}
             seps = {k: torch.stack(t, dim=0) for k,t in seps.items()}
             ms = torch.stack(ms, dim=0)
