@@ -26,8 +26,8 @@ def si_sdr(preds: torch.Tensor, target: torch.Tensor) -> float:
     return tma.scale_invariant_signal_distortion_ratio(preds=preds.cpu(), target=target.cpu()).mean().item()
 
 
-def sdr(preds: torch.Tensor, target: torch.Tensor) -> float:
-     return tma.signal_distortion_ratio(preds=preds.cpu(), target=target.cpu())#.mean().item()
+def sdr(preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    return 10 * torch.log10((torch.norm(target, dim=-1)**2 + 1e-7)/((torch.norm(target - preds, dim=-1))**2 + 1e-7))
 
 
 def museval_sdr(preds: torch.Tensor, target: torch.Tensor, sample_rate: int) -> float:
