@@ -267,6 +267,66 @@ def weakly_slakh(output_dir: Union[str, Path]):
     with open(output_dir / "chunk_data.json", "w") as f:
         json.dump(chunk_data, f)
 
+@torch.no_grad()
+def weakly_musdb(output_dir: Union[str, Path]):
+    output_dir = Path(output_dir)
+    device = torch.device("cuda:0")
+
+    dataset = ChunkedSupervisedDataset(
+        audio_dir="/home/irene/Documents/audio-diffusion-pytorch-trainer/data/MusDB/test",
+        stems=["bass", "drums", "other", "vocals"],
+        sample_rate=44100,
+        max_chunk_size=262144 * 2,
+        min_chunk_size=262144 * 2,
+    )
+
+    resampled_dataset = ResampleDataset(dataset=dataset, new_sample_rate=22050)
+    resampled_dataset = TransformDataset(
+        resampled_dataset, 
+        transform=functools.partial(torch.sum, dim=0, keepdims=True),
+    )
+    ckpts_path = ROOT_PATH / "data"
+    model_bass_cpu = load_model(ckpts_path / "rustful-dust-117_epoch=19999-loss=0.026.ckpt", "cpu")
+    model_vocals_cpu = load_model(ckpts_path / "royal-breeze-162_epoch=29142_loss=0.138.ckpt", "cpu")
+    model_drums_cpu = load_model(ckpts_path / "usual-frost-113_epoch=10571-loss=0.200.ckpt", "cpu")
+    model_other_cpu = load_model(ckpts_path / "copper-wood-169_epoch=28571-valid_loss=0.206.ckpt", "cpu")
+    
+    model_bass = model_bass_cpu.to(device)
+    model_vocals = model_vocals_cpu.to(device)
+    model_drums = model_drums_cpu.to(device)
+    model_other = model_other_cpu.to(device)
+    del model_drums_cpu, model_bass_cpu, model_vocals_cpu, model_other_cpu
+
+    separator = IndependentSeparator(
+        stem_to_model={"bass": model_bass, "drums": model_drums, "other": model_other, "vocals": model_vocals},
+        sigma_schedule=KarrasSchedule(sigma_min=1e-4, sigma_max=20.0, rho=7.0),
+        s_churn=40.0,
+        differential_fn=functools.partial(differential_with_dirac, source_id=1)
+    )
+
+    chunk_data = []
+    for i in range(len(dataset)):
+        start_sample, end_sample = dataset.get_chunk_indices(i)
+        chunk_data.append(
+            {
+                "chunk_index": i,
+                "track": dataset.get_chunk_track(i),
+                "start_chunk_sample": start_sample,
+                "end_chunk_sample": end_sample,
+                "start_chunk_seconds": start_sample / 44100,
+                "end_chunk_in_seconds": end_sample / 44100,
+            }
+        )
+
+    separate_dataset(
+        dataset=resampled_dataset,
+        separator=separator,
+        save_path=output_dir,
+        num_steps=200,
+    )
+
+    with open(output_dir / "chunk_data.json", "w") as f:
+        json.dump(chunk_data, f)
 
 @torch.no_grad()
 def weakly_musdb(output_dir: Union[str, Path]):
@@ -380,6 +440,58 @@ def context_musdb_4stems(output_dir: Union[str, Path]):
     with open(output_dir / "chunk_data.json", "w") as f:
         json.dump(chunk_data, f)
 
+@torch.no_grad()
+def context_slakh_4stems(output_dir: Union[str, Path]):
+    output_dir = Path(output_dir)
+    device = torch.device("cuda:0")
+    sigma_min, sigma_max, s_churn, source_id = 1e-4, 1.0, 20.0, 0
+
+    dataset = ChunkedSupervisedDataset(
+        audio_dir="/home/giorgio_mariani/audio-diffusion-pytorch-trainer/data/Slakh/test",
+        stems=["bass", "drums", "guitar", "piano"],
+        sample_rate=44100,
+        max_chunk_size=262144 * 2,
+        min_chunk_size=262144 * 2,
+    )
+
+    resampled_dataset = ResampleDataset(dataset=dataset, new_sample_rate=22050)
+    ckpts_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
+    model_cpu = load_context(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt", "cpu", 4)
+    model = model_cpu.to(device)
+    del model_cpu
+
+    separator = ContextualSeparator(
+        model=model,
+        stems=["bass", "drums", "guitar", "piano"],
+        sigma_schedule=KarrasSchedule(sigma_min=sigma_min, sigma_max=sigma_max, rho=7.0),
+        s_churn=s_churn,
+        differential_fn=functools.partial(differential_with_dirac, source_id=source_id)
+    )
+
+    chunk_data = []
+    for i in range(len(dataset)):
+        start_sample, end_sample = dataset.get_chunk_indices(i)
+        chunk_data.append(
+            {
+                "chunk_index": i,
+                "track": dataset.get_chunk_track(i),
+                "start_chunk_sample": start_sample,
+                "end_chunk_sample": end_sample,
+                "start_chunk_seconds": start_sample / 44100,
+                "end_chunk_in_seconds": end_sample / 44100,
+            }
+        )
+
+    separate_dataset(
+        dataset=resampled_dataset,
+        separator=separator,
+        save_path=output_dir,
+        num_steps=200,
+    )
+
+    with open(output_dir / "chunk_data.json", "w") as f:
+        json.dump(chunk_data, f)
+
 
 if __name__ == "__main__":
-    context_musdb_4stems("separation/complete_context_musdb_4stems")
+    context_slakh_4stems("separation/complete_context_musdb_4stems")

@@ -58,11 +58,17 @@ def get_rms(source_waveforms):
   #return source_norms <= 1e-8
 
 
-def evaluate_data(separation_path, filter_silence: bool = True):
+def evaluate_data(separation_path, filter_silence: bool = True, batch_size: int = 512):
     separation_folder = Path(separation_path)
-    seps, oris, ori_rms, ms = defaultdict(list), defaultdict(list), defaultdict(list), []
-
-    for chunk_folder in (list(separation_folder.glob("*"))):
+    seps, oris, ms = defaultdict(list), defaultdict(list), []
+    
+    chunks = list(separation_folder.glob("*"))
+    complete_results = defaultdict(list)
+    
+    for ci, chunk_folder in enumerate(tqdm(chunks)):
+        if not chunk_folder.is_dir():
+            continue
+        
         original_tracks_and_rate = {ori.name.split(".")[0][3:]: torchaudio.load(ori) for ori in sorted(list(chunk_folder.glob("ori*.wav")))}
         separated_tracks_and_rate = {sep.name.split(".")[0][3:]: torchaudio.load(sep) for sep in sorted(list(chunk_folder.glob("sep*.wav")))}
         assert tuple(original_tracks_and_rate.keys()) == tuple(separated_tracks_and_rate.keys())
@@ -73,29 +79,39 @@ def evaluate_data(separation_path, filter_silence: bool = True):
         separated_tracks = {k:t for k, (t,_) in separated_tracks_and_rate.items()}
         sample_rates_sep = [s for (_,s) in separated_tracks_and_rate.values()]
 
-        assert len({*sample_rates_ori, *sample_rates_sep}) == 1
+        assert len({*sample_rates_ori, *sample_rates_sep}) == 1, print({*sample_rates_ori, *sample_rates_sep})
         assert len(original_tracks) == len(separated_tracks)
         m = sum(original_tracks.values())
 
-        for k,t in original_tracks.items():
-            rms = get_rms(t)
+        for k in original_tracks.keys():
+            ori_t = original_tracks[k]
+            sep_t = separated_tracks[k]
+
+            rms = get_rms(ori_t)
             if rms <= 1e-8 and filter_silence:
-                t[:] = torch.nan
-            oris[k].append(t)
+                ori_t[:] = torch.nan
+
+            oris[k].append(ori_t)
+            seps[k].append(sep_t)
 
         for k,t in separated_tracks.items():
             seps[k].append(t)
 
         ms.append(m)
+        
+        if ci % batch_size == 0:
+            oris = {k: torch.stack(t, dim=0) for k,t in oris.items()}
+            seps = {k: torch.stack(t, dim=0) for k,t in seps.items()}
+            ms = torch.stack(ms, dim=0)
 
-    oris = {k: torch.stack(t, dim=0) for k,t in oris.items()}
-    seps = {k: torch.stack(t, dim=0) for k,t in seps.items()}
-    ms = torch.stack(ms, dim=0)
+            results = {f"SISNRi_{k}": (si_snr_unreduced(seps[k], oris[k]) - si_snr_unreduced(ms, oris[k])).view(-1).tolist() for k in oris}
+            for k,v in results.items():
+                complete_results[k].extend(v)
+            
+            seps, oris, ms = defaultdict(list), defaultdict(list), []
 
-    results = {f"SISNRi_{k}": (si_snr_unreduced(seps[k], oris[k]) - si_snr_unreduced(ms, oris[k])).view(-1).tolist() for k in oris}
-    #results = {f"SISNRi_{k}": (si_snr_unreduced(seps[k], oris[k])).view(-1).tolist() for k in oris}
-    df = pd.DataFrame(results).mean()
-    return df.to_dict()
+    df = pd.DataFrame(complete_results).mean()
+    return df#.to_dict()
 
 def read_ablation_results(sep_dir: Union[str, Path], filter_silence: bool = True):
     sep_dir = Path(sep_dir)
