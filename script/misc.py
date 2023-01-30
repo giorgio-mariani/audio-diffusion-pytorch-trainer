@@ -39,6 +39,31 @@ hparams = dict(
     diffusion_dynamic_threshold=0.0,
 )
 
+hparams_3stems = dict(
+  learning_rate= 1e-4,
+  beta1= 0.9,
+  beta2= 0.99,
+  in_channels= 3,
+  channels= 288,
+  patch_factor= 16,
+  patch_blocks= 1,
+  resnet_groups= 8,
+  kernel_multiplier_downsample= 2,
+  kernel_sizes_init= [1, 3, 7],
+  multipliers= [1, 2, 4, 4, 4, 4, 4],
+  factors= [4, 4, 4, 2, 2, 2],
+  num_blocks= [2, 2, 2, 2, 2, 2],
+  attentions=[False, False, False, True, True, True],
+  attention_heads=8,
+  attention_features=128,
+  attention_multiplier=2,
+  use_nearest_upsample=False,
+  use_skip_scale=True,
+  use_attention_bottleneck=True,
+  diffusion_sigma_distribution=diffusion_sigma_distribution,
+  diffusion_sigma_data=0.2,
+  diffusion_dynamic_threshold=0.0,
+)
 
 def load_model(path: str, device: str) -> main.module_base.Model:
     model_1 = main.module_base.Model(**hparams)
