@@ -54,7 +54,6 @@ class IndependentSeparator(Separator):
         self.separation_kwargs = kwargs
         self.sigma_schedule = sigma_schedule
 
-    
     def separate(self, mixture: torch.Tensor, num_steps: int):
         stems = self.stem_to_model.keys()
         models = [self.stem_to_model[s] for s in stems]
@@ -112,6 +111,7 @@ def separate_mixture(
     differential_fn: Callable = differential_with_dirac,
     s_churn: float = 0.0, # > 0 to add randomness
     use_heun: bool = False,
+    num_resamples: int = 1,
 ):      
     # Set initial noise
     x = sigmas[0] * noises # [batch_size, num-sources, sample-length]
@@ -119,24 +119,29 @@ def separate_mixture(
     for i in range(len(sigmas) - 1):
         sigma, sigma_next = sigmas[i], sigmas[i+1]
 
-        # Inject randomness
-        gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1)
-        sigma_hat = sigma * (gamma + 1)            
-        x_hat = x + torch.randn_like(x) * (sigma_hat ** 2 - sigma ** 2) ** 0.5
+        for r in range(num_resamples):
+            # Inject randomness
+            gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1)
+            sigma_hat = sigma * (gamma + 1)
+            x = x + torch.randn_like(x) * (sigma_hat ** 2 - sigma ** 2) ** 0.5
 
-        # Compute conditioned derivative
-        d = differential_fn(mixture=mixture, x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn)
+            # Compute conditioned derivative
+            d = differential_fn(mixture=mixture, x=x, sigma=sigma_hat, denoise_fn=denoise_fn)
 
-        # Update integral
-        if not use_heun or sigma_next == 0.0:
-            # Euler method
-            x = x_hat + d * (sigma_next - sigma_hat) 
-        else:
-            # Heun's method
-            x_2 = x_hat + d * (sigma_next - sigma_hat)
-            d_2 = differential_fn(mixture=mixture, x=x_2, sigma=sigma_next, denoise_fn=denoise_fn)
-            d_prime = (d + d_2) / 2
-            x = x + d_prime * (sigma_next - sigma_hat)
+            # Update integral
+            if not use_heun or sigma_next == 0.0:
+                # Euler method
+                x = x + d * (sigma_next - sigma_hat)
+            else:
+                # Heun's method
+                x_2 = x + d * (sigma_next - sigma_hat)
+                d_2 = differential_fn(mixture=mixture, x=x_2, sigma=sigma_next, denoise_fn=denoise_fn)
+                d_prime = (d + d_2) / 2
+                x = x + d_prime * (sigma_next - sigma_hat)
+
+            # Renoise if not last resample step
+            if r < num_resamples - 1:
+                x = x + sqrt(sigma ** 2 - sigma_next ** 2) * torch.randn_like(x)
     
     return x.cpu().detach()
 
