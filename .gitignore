@@ -11,3 +11,5 @@ logs/
 data/
 train.log
 .idea
+separations/
+.vscode
