@@ -270,7 +270,7 @@ def contextual_slakh(output_dir: Union[str, Path]):
     resampled_dataset = ResampleDataset(dataset=dataset, new_sample_rate=22050)
     rng = numpy.random.default_rng(seed=42)
     indices = rng.choice(
-        numpy.arange(0, len(resampled_dataset), dtype=numpy.int32), size=30, replace=False
+        numpy.arange(0, len(resampled_dataset), dtype=numpy.int32), size=50, replace=False
     ).tolist()
     
     resampled_dataset= SeparationSubset(resampled_dataset, indices=indices)
@@ -286,9 +286,9 @@ def contextual_slakh(output_dir: Union[str, Path]):
         model=model, 
         stems=["bass", "drums", "guitar", "piano"], 
         sigma_schedule=KarrasSchedule(sigma_min=1e-4, sigma_max=1.0, rho=7.0),
-        s_churn=20.0,
+        s_churn=0.0,
         num_resamples=3,
-        differential_fn=functools.partial(differential_with_dirac, source_id=3),
+        differential_fn=functools.partial(differential_with_dirac, source_id=1),
     )
 
     chunk_data = []
@@ -318,4 +318,4 @@ def contextual_slakh(output_dir: Union[str, Path]):
 
 
 if __name__ == "__main__":
-    contextual_slakh("separations/contextual_dirac_slakh_resample")
+    contextual_slakh("separations/contextual_dirac_slakh_resample_no_churn")

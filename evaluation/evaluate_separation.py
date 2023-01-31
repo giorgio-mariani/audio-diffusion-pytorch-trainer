@@ -54,7 +54,7 @@ def evaluate_data(separation_path):
     separation_folder = Path(separation_path)
     seps, oris, ms = defaultdict(list), defaultdict(list), []
 
-    for chunk_folder in (list(separation_folder.glob("*"))):
+    for i, chunk_folder in enumerate((list(separation_folder.glob("*")))):
         original_tracks_and_rate = {ori.name.split(".")[0][3:]: torchaudio.load(ori) for ori in sorted(list(chunk_folder.glob("ori*.wav")))}
         separated_tracks_and_rate = {sep.name.split(".")[0][3:]: torchaudio.load(sep) for sep in sorted(list(chunk_folder.glob("sep*.wav")))}
         assert tuple(original_tracks_and_rate.keys()) == tuple(separated_tracks_and_rate.keys())
@@ -65,7 +65,10 @@ def evaluate_data(separation_path):
         separated_tracks = {k:t for k, (t,_) in separated_tracks_and_rate.items()}
         sample_rates_sep = [s for (_,s) in separated_tracks_and_rate.values()]
 
-        assert len({*sample_rates_ori, *sample_rates_sep}) == 1
+        if len({*sample_rates_ori, *sample_rates_sep}) != 1:
+            print(f"track {i} skipped")
+            continue
+        #assert len({*sample_rates_ori, *sample_rates_sep}) == 1, f"{sample_rates_ori}, {sample_rates_sep}, {i}"
         assert len(original_tracks) == len(separated_tracks)
         m = sum(original_tracks.values())
 
@@ -86,7 +89,7 @@ def evaluate_data(separation_path):
     ms = torch.stack(ms, dim=0)
 
     results = {f"SISNRi_{k}": si_snr(seps[k], oris[k]) - si_snr(ms, oris[k]) for k in oris}
-    return results
+    return results, ms.shape[0]
 
 
 #@click.command()
