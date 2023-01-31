@@ -28,7 +28,6 @@ def sisnr(preds: torch.Tensor, target: torch.Tensor, eps: float = 1e-5) -> torch
     noise = target_scaled - preds
     s_target = torch.sum(target_scaled**2, dim=-1) + eps
     s_error = torch.sum(noise**2, dim=-1) + eps
-
     return 10 * torch.log10(s_target / s_error)
 
 
@@ -56,8 +55,7 @@ def load_chunks(chunk_folder: Path) -> Tuple[Mapping[str, torch.Tensor], Mapping
     return original_tracks, separated_tracks, sr
 
 
-def evaluate_chunks(separation_path, filter_silence: bool = True, batch_size: int = 512, orig_sr: int = 44100, resample_sr: Optional[int] = None):
-    print(separation_path)
+def evaluate_chunks(separation_path: Union[str, Path], filter_silence: bool = True, batch_size: int = 512, orig_sr: int = 44100, resample_sr: Optional[int] = None):
     separation_folder = Path(separation_path)
     seps, oris, ms = defaultdict(list), defaultdict(list), []
     
@@ -65,8 +63,7 @@ def evaluate_chunks(separation_path, filter_silence: bool = True, batch_size: in
     complete_results = defaultdict(list)
 
     resample_fn = Resample(orig_freq=orig_sr, new_freq=resample_sr) if resample_sr is not None else lambda x: x
-    
-    for ci, chunk_folder in enumerate(tqdm(chunks)):
+    for ci, chunk_folder in enumerate((chunks)):
         if not chunk_folder.is_dir():
             continue
         
@@ -91,23 +88,23 @@ def evaluate_chunks(separation_path, filter_silence: bool = True, batch_size: in
 
         ms.append(resample_fn(m))
         
-        if (ci+1) % batch_size == 0:
+        if (ci+1) % batch_size == 0 or (ci+1) == len(chunks):
             oris = {k: torch.stack(t, dim=0) for k,t in oris.items()}
             seps = {k: torch.stack(t, dim=0) for k,t in seps.items()}
             ms = torch.stack(ms, dim=0)
 
-            #results = {f"SISNRi_{k}": (si_snr_unreduced(seps[k], oris[k]) - si_snr_unreduced(ms, oris[k])).view(-1).tolist() for k in oris}
-            results = {f"SDR_{k}": sdr(seps[k], oris[k]).view(-1).tolist() for k in oris}
+            results = {f"SISNRi_{k}": (sisnr(seps[k], oris[k]) - sisnr(ms, oris[k])).view(-1).tolist() for k in oris}
+            #results = {f"SDR_{k}": sdr(seps[k], oris[k]).view(-1).tolist() for k in oris}
             for k,v in results.items():
                 complete_results[k].extend(v)
             
             seps, oris, ms = defaultdict(list), defaultdict(list), []
 
-    df = pd.DataFrame(complete_results)
-    return df#.to_dict()
+    df = pd.DataFrame(complete_results).mean()
+    return df.to_dict()
 
 
-def evaluate_tracks(separation_path, orig_sr: int = 44100, resample_sr: Optional[int] = None):
+def evaluate_tracks(separation_path: Union[str, Path], orig_sr: int = 44100, resample_sr: Optional[int] = None):
     separation_folder = Path(separation_path)
     assert separation_folder.exists(), separation_folder
     assert (separation_folder / "chunk_data.json").exists(), separation_folder
@@ -154,7 +151,7 @@ def evaluate_tracks(separation_path, orig_sr: int = 44100, resample_sr: Optional
     return pd.DataFrame.from_records(track_to_sdr).transpose()
 
 
-def evaluate_tracks_chunks(separation_path, chunk_size: int, orig_sr: int = 44100, resample_sr: Optional[int] = None):
+def evaluate_tracks_chunks(separation_path: Union[str, Path], chunk_size: int, orig_sr: int = 44100, resample_sr: Optional[int] = None):
 
     separation_folder = Path(separation_path)
     assert separation_folder.exists(), separation_folder
@@ -203,7 +200,7 @@ def evaluate_tracks_chunks(separation_path, chunk_size: int, orig_sr: int = 4410
 
     return pd.DataFrame(results)
 
-def read_ablation_results(sep_dir: Union[str, Path], filter_silence: bool = True):
+def read_ablation_results(sep_dir: Union[str, Path], orig_sr: int = 44100, filter_silence: bool = False):
     sep_dir = Path(sep_dir)
 
     hparams_files = list(sep_dir.glob("*.json"))
@@ -219,8 +216,9 @@ def read_ablation_results(sep_dir: Union[str, Path], filter_silence: bool = True
             assert match is not None
             experiment_number = match.groupdict()["exp_num"]
             experiment_dir = sep_dir / f"experiment-{experiment_number}"
-            # print(experiment_dir)
-            hparams_results = evaluate_chunks(experiment_dir, filter_silence=filter_silence)
+            chunk_results = evaluate_chunks(experiment_dir, orig_sr=orig_sr, filter_silence=filter_silence)
+            hparams_results = pd.DataFrame(chunk_results).mean().to_dict()
+
             records.append({**hparams, **hparams_results})
 
     return pd.DataFrame.from_records(records)
