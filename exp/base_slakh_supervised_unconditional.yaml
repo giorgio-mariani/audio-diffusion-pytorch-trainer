@@ -88,7 +88,7 @@ callbacks:
     max_depth: 2
 
   audio_samples_logger:
-    _target_: main.module_base.SampleLogger
+    _target_: main.module_base.ContextualSampleLogger
     num_items: 1
     channels: 4
     sampling_rate: ${sampling_rate}
