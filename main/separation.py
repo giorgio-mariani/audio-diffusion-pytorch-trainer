@@ -1,11 +1,11 @@
 import abc
 from pathlib import Path
 from typing import List, Optional, Callable, Tuple, Mapping
+from tqdm import tqdm
 
 import numpy as np
 import torch
 import torchaudio
-import tqdm
 from torch import Tensor
 from math import sqrt
 
@@ -52,7 +52,6 @@ class ContextualSeparator(Separator):
         source_with_hint: torch.Tensor,
         mask: torch.Tensor,
         num_steps:int = 100,
-        num_resamples = 1
         ):
         
         device = self.model.device
@@ -113,7 +112,7 @@ class IndependentSeparator(Separator):
 def differential_with_dirac(x, sigma, denoise_fn, mixture, source_id=0):
     num_sources = x.shape[1]
     # + torch.randn_like(self.mixture) * sigma
-    x[:, source_id, :] = mixture - (x.sum(dim=[1], keepdim=True) - x[:, source_id, :])
+    x[:, [source_id], :] = mixture - (x.sum(dim=1, keepdim=True) - x[:, [source_id], :])
     score = (x - denoise_fn(x, sigma=sigma)) / sigma
     scores = [score[:, si] for si in range(num_sources)]
     ds = [s - score[:, source_id] for s in scores]
@@ -210,10 +209,12 @@ def inpaint_mixture(
     s_churn: float = 20.0, # > 0 to add randomness
     use_heun: bool = False,
 ) -> Tensor:
+    
     x = sigmas[0] * noises
 
-    for i in range(len(sigmas) - 1):
+    for i in tqdm(range(len(sigmas) - 1)):
         # Noise source to current noise level
+
         source_noisy = source + sigmas[i] * torch.randn_like(source)
         for r in range(num_resamples):
             # Merge noisy source and current then denoise
@@ -287,7 +288,7 @@ def separate_dataset(
 
     # main loop
     save_path.mkdir(exist_ok=True)
-    for batch_idx, batch in enumerate(tqdm.tqdm(loader)):
+    for batch_idx, batch in enumerate(tqdm(loader)):
 
         # load audio tracks
         tracks = batch
