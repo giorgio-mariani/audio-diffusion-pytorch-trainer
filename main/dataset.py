@@ -163,6 +163,11 @@ class FlipSign(nn.Module):
             wav = wav * (2 * signs - 1)
         return wav
 
+class SumReduce(nn.Module):
+    "Sum channels to one channel"
+    def forward(self, wav):
+        wav = torch.sum(wav, dim=0, keepdim=True)
+        return wav
 
 class Scale(nn.Module):
     def __init__(self, scales_sampler: Distribution, proba=1.):
