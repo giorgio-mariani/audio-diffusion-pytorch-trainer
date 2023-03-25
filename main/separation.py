@@ -11,6 +11,9 @@ from math import sqrt
 
 from audio_diffusion_pytorch.diffusion import Sampler, KarrasSchedule, Schedule
 from torch.utils.data import DataLoader
+from torch import nn
+from torchdiffeq import odeint
+import main.utils as utils
 
 from main.dataset import assert_is_audio, SeparationDataset
 from main.module_base import Model
@@ -375,3 +378,31 @@ def least_squares_normalization(ys: List[torch.Tensor], mixture: torch.Tensor):
     a,_,_,_ = np.linalg.lstsq(y, mixture.view(-1, 1).cpu().numpy())
     alphas = a.reshape(-1).tolist()
     return [a*y for a,y in zip(alphas, ys)]
+
+
+
+def to_d(x, sigma, denoised):
+    """Converts a denoiser output to a Karras ODE derivative."""
+    return (x - denoised) / utils.append_dims(sigma, x.ndim)
+
+@torch.no_grad()
+def log_likelihood(model, x, sigma_min, sigma_max, atol=1e-4, rtol=1e-4):
+    s_in = x.new_ones([x.shape[0]])
+    v = torch.randint_like(x, 2) * 2 - 1
+    fevals = 0
+    def ode_fn(sigma, x):
+        nonlocal fevals
+        with torch.enable_grad():
+            x = x[0].detach().requires_grad_()
+            denoised = model(x, sigma * s_in)
+            d = to_d(x, sigma, denoised)
+            fevals += 1
+            grad = torch.autograd.grad((d * v).sum(), x)[0]
+            d_ll = (v * grad).flatten(1).sum(1)
+        return d.detach(), d_ll
+    x_min = x, x.new_zeros([x.shape[0]])
+    t = x.new_tensor([sigma_min, sigma_max])
+    sol = odeint(ode_fn, x_min, t, atol=atol, rtol=rtol, method='dopri5')
+    latent, delta_ll = sol[0][-1], sol[1][-1]
+    ll_prior = torch.distributions.Normal(0, sigma_max).log_prob(latent).flatten(1).sum(1)
+    return ll_prior + delta_ll, {'fevals': fevals}
