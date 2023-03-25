@@ -21,3 +21,4 @@ quantizer-pytorch
 difformer-pytorch
 a-transformers-pytorch
 av
+webdataset

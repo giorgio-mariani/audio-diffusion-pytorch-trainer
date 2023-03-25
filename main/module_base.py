@@ -85,6 +85,42 @@ class ModelFromUrl(pl.LightningModule):
 
 
 """ Datamodule """
+class WebDatasetDatamodule(pl.LightningDataModule):
+    def __init__(
+        self,
+        train_dataset,
+        val_dataset,
+        batch_size: int = 1,
+        num_workers: int = 0,
+        shuffle_size: int = 500,
+    ) -> None:
+        super().__init__()
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.shuffle_size = shuffle_size
+        self.save_hyperparameters()
+        
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(
+            dataset=self.train_dataset.batched(self.batch_size).map(lambda x: torch.cat(x, dim=1)).shuffle(self.shuffle_size),
+            batch_size=None,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+    def val_dataloader(self) -> DataLoader:
+        return DataLoader(
+            dataset=self.val_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            shuffle=False,
+        )
+
+
 class DatamoduleWithValidation(pl.LightningDataModule):
     def __init__(
         self,
@@ -119,7 +155,7 @@ class DatamoduleWithValidation(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            shuffle=True,
+            shuffle=False,
         )
 
 class Datamodule(pl.LightningDataModule):
