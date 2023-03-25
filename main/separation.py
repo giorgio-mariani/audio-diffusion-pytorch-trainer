@@ -113,6 +113,7 @@ class IndependentSeparator(Separator):
 
 
 def differential_with_dirac(x, sigma, denoise_fn, mixture, source_id=0):
+    print(f"{source_id=}")
     num_sources = x.shape[1]
     # + torch.randn_like(self.mixture) * sigma
     x[:, [source_id], :] = mixture - (x.sum(dim=1, keepdim=True) - x[:, [source_id], :])
@@ -174,6 +175,7 @@ def step(
     differential_fn: Callable = differential_with_dirac,
     s_churn: float = 0.0, # > 0 to add randomness
     use_heun: bool = False,
+    **kwargs
 ):      
     sigma, sigma_next = sigmas[i], sigmas[i+1]
 
@@ -183,7 +185,7 @@ def step(
     x_hat = x + torch.randn_like(x) * (sigma_hat ** 2 - sigma ** 2) ** 0.5
 
     # Compute conditioned derivative
-    d = differential_fn(mixture=mixture, x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn)
+    d = differential_fn(mixture=mixture, x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn, **kwargs)
 
     # Update integral
     if not use_heun or sigma_next == 0.0:
@@ -211,6 +213,7 @@ def inpaint_mixture(
     num_resamples: int = 1,
     s_churn: float = 20.0, # > 0 to add randomness
     use_heun: bool = False,
+    **kwargs
 ) -> Tensor:
     
     x = sigmas[0] * noises
@@ -223,7 +226,7 @@ def inpaint_mixture(
             # Merge noisy source and current then denoise
             x = source_noisy * mask + x * mask.logical_not()
             x = step(x, i, mixture=mixture, denoise_fn=fn, 
-                    sigmas=sigmas, s_churn=s_churn, use_heun=use_heun)  # type: ignore # noqa
+                    sigmas=sigmas, s_churn=s_churn, use_heun=use_heun, **kwargs)  # type: ignore # noqa
             # Renoise if not last resample step
             if r < num_resamples - 1:
                 sigma = sqrt(sigmas[i] ** 2 - sigmas[i + 1] ** 2)
