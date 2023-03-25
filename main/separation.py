@@ -113,7 +113,6 @@ class IndependentSeparator(Separator):
 
 
 def differential_with_dirac(x, sigma, denoise_fn, mixture, source_id=0):
-    print(f"{source_id=}")
     num_sources = x.shape[1]
     # + torch.randn_like(self.mixture) * sigma
     x[:, [source_id], :] = mixture - (x.sum(dim=1, keepdim=True) - x[:, [source_id], :])
