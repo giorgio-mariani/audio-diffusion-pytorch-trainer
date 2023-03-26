@@ -385,26 +385,73 @@ def least_squares_normalization(ys: List[torch.Tensor], mixture: torch.Tensor):
 
 def to_d(x, sigma, denoised):
     """Converts a denoiser output to a Karras ODE derivative."""
-    return (x - denoised) / utils.append_dims(sigma, x.ndim)
+    #return (x - denoised) / utils.append_dims(sigma, x.ndim)
+    return (x - denoised) / sigma
 
 @torch.no_grad()
-def log_likelihood(model, x, sigma_min, sigma_max, atol=1e-4, rtol=1e-4):
-    s_in = x.new_ones([x.shape[0]])
-    v = torch.randint_like(x, 2) * 2 - 1
+def log_likelihood_crawford(model, x, sigma_min, sigma_max, atol=1e-4, rtol=1e-4):
+    #print(f"{x.shape=}")
+    #s_in = x.new_ones([x.shape[0]])
+    #print(f"{s_in.shape=}")
+    v = [torch.randint_like(x, 2) * 2 - 1 for i in range(10)]
+    #print(f"{v=}")
+    fevals = 0
+    def ode_fn(sigma, x):
+        print("----------------------------------------------------")
+        #print(f"{sigma=}")
+        nonlocal fevals
+        with torch.enable_grad():
+            dll_list = []
+            fevals += 1
+            for i in range(10):
+                y = x.detach().requires_grad_()
+                #print(f"{x.shape=}")
+                denoised = model(y, sigma.unsqueeze(0))# * s_in)
+                d = to_d(y, sigma, denoised)
+                #print(f"{d=}")
+                grad = torch.autograd.grad((d * v[i]).sum(), y)[0]
+                #print(f"{grad.shape=}")
+                d_ll = (v[i] * grad).flatten(1).sum(1)
+                #print(f"{d_ll=}")
+                dll_list.append(d_ll)
+            d_ll_tot = torch.tensor(dll_list).cuda().mean()
+            print(d_ll)
+        return d.detach(), d_ll_tot
+    x_min = x#, x.new_zeros([x.shape[0]])
+    print(f"{x_min=}")
+    t = x.new_tensor([sigma_min, sigma_max])
+    print(f"{t=}")
+    sol = odeint(ode_fn, x_min, t, atol=atol, rtol=rtol, method='dopri5')
+    #print(f"{sol=}")
+    latent, delta_ll = sol[0][-1], sol[1][-1]
+    ll_prior = torch.distributions.Normal(0, sigma_max).log_prob(latent).flatten(1).sum(1)
+    return ll_prior + delta_ll, {'fevals': fevals}
+
+@torch.no_grad()
+def log_likelihood_song(model, x, sigma_min, sigma_max, atol=1e-4, rtol=1e-4):
+    #print(f"{x.shape=}")
+    eps = torch.randint_like(x.reshape((1, x.numel())), 2) * 2 - 1
+    #print(f"{eps.shape=}")
     fevals = 0
     def ode_fn(sigma, x):
         nonlocal fevals
         with torch.enable_grad():
             x = x[0].detach().requires_grad_()
-            denoised = model(x, sigma * s_in)
-            d = to_d(x, sigma, denoised)
+            #print(f"{x.shape=} bau")
+            #print(f"{sigma=}")
+            denoised = model(x, sigma.unsqueeze(0))
+            d = to_d(x, sigma, denoised).reshape((x.numel(), 1))
+            #print(f"{d.shape=}")
             fevals += 1
-            grad = torch.autograd.grad((d * v).sum(), x)[0]
-            d_ll = (v * grad).flatten(1).sum(1)
+            grad = torch.autograd.grad(eps @ d, x)[0].reshape((x.numel(), 1))
+            #print(f"{grad.shape=}")
+            d_ll = (eps @ grad).mean()
         return d.detach(), d_ll
     x_min = x, x.new_zeros([x.shape[0]])
     t = x.new_tensor([sigma_min, sigma_max])
+    #print(f"{t.shape=}")
+    #print(f"{x_min[0].shape=}")
     sol = odeint(ode_fn, x_min, t, atol=atol, rtol=rtol, method='dopri5')
     latent, delta_ll = sol[0][-1], sol[1][-1]
     ll_prior = torch.distributions.Normal(0, sigma_max).log_prob(latent).flatten(1).sum(1)
-    return ll_prior + delta_ll, {'fevals': fevals}
+    return ll_prior + delta_ll, {'fevals': fevals}, sol
