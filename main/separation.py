@@ -391,9 +391,9 @@ def to_d(x, sigma, denoised):
 @torch.no_grad()
 def log_likelihood_crawford(model, x, sigma_min, sigma_max, atol=1e-4, rtol=1e-4):
     #print(f"{x.shape=}")
-    #s_in = x.new_ones([x.shape[0]])
+    s_in = x.new_ones([x.shape[0]])
     #print(f"{s_in.shape=}")
-    v = [torch.randint_like(x, 2) * 2 - 1 for i in range(10)]
+    v = torch.randint_like(x, 2) * 2 - 1
     #print(f"{v=}")
     fevals = 0
     def ode_fn(sigma, x):
@@ -401,22 +401,18 @@ def log_likelihood_crawford(model, x, sigma_min, sigma_max, atol=1e-4, rtol=1e-4
         #print(f"{sigma=}")
         nonlocal fevals
         with torch.enable_grad():
-            dll_list = []
             fevals += 1
-            for i in range(10):
-                y = x.detach().requires_grad_()
-                #print(f"{x.shape=}")
-                denoised = model(y, sigma.unsqueeze(0))# * s_in)
-                d = to_d(y, sigma, denoised)
-                #print(f"{d=}")
-                grad = torch.autograd.grad((d * v[i]).sum(), y)[0]
-                #print(f"{grad.shape=}")
-                d_ll = (v[i] * grad).flatten(1).sum(1)
-                #print(f"{d_ll=}")
-                dll_list.append(d_ll)
-            d_ll_tot = torch.tensor(dll_list).cuda().mean()
+            y = x.detach().requires_grad_()
+            #print(f"{x.shape=}")
+            denoised = model(y, sigma * s_in)
+            d = to_d(y, sigma, denoised)
+            #print(f"{d=}")
+            grad = torch.autograd.grad((d * v).sum(), y, retain_graph=True)[0]
+            #print(f"{grad.shape=}")
+            d_ll = (v * grad).flatten(1).sum(1)
+            #print(f"{d_ll=}")
             print(d_ll)
-        return d.detach(), d_ll_tot
+        return d.detach(), d_ll
     x_min = x#, x.new_zeros([x.shape[0]])
     print(f"{x_min=}")
     t = x.new_tensor([sigma_min, sigma_max])
