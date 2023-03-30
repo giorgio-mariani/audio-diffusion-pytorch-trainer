@@ -17,6 +17,27 @@ import webdataset as wds
 from webdataset.autodecode import torch_audio
 from torchaudio.functional import resample
 
+
+def _resample(sample: List[Tuple[Tensor, int]], sample_rate: int):
+    return tuple(resample(wav, orig_freq=sr_orig, new_freq=sample_rate) for (wav, sr_orig) in sample)
+
+
+def _divide_in_chunks(src: wds.WebDataset, chunk_size: int):
+    for sample in src:
+
+        # check sample correctness
+        assert isinstance(sample, tuple), f"Expected tuple, got {type(sample)}"
+        for x in sample:
+            assert isinstance(x, Tensor), f"Expected tuple, got {type(x)}"
+
+        # get length of first element in step
+        wav = sample[0]
+        channels, length = wav.shape
+
+        for i in range(length // chunk_size):
+            yield tuple(wav[:, i*chunk_size: (i+1)*chunk_size] for wav in sample)
+
+
 def create_bootstrap_jamendo_dataset(
             path: str,
             stems: List[str],
@@ -24,21 +45,13 @@ def create_bootstrap_jamendo_dataset(
             chunk_size: Optional[int] = None,
             shardshuffle: bool = False,
     ):
-        def _fn_resample(sample):
-            return tuple(resample(wav, orig_freq=sr_orig, new_freq=sample_rate) for (wav, sr_orig) in sample)
-
-        def _get_slices(src):
-            for sample in src:
-                # get length of first element in step
-                wav = sample[0]
-                channels, length = wav.shape
-
-                for i in range(length // chunk_size):
-                    yield tuple(wav[:, i*chunk_size: (i+1)*chunk_size] for wav in  sample)
+        _fn_resample = functools.partial(_resample, sample_rate=sample_rate)
+        _fn_chunkize = functools.partial(_divide_in_chunks, chunk_size=chunk_size)
 
         # create datapipeline
-        dataset = wds.WebDataset(path, shardshuffle=shardshuffle).decode(torch_audio).to_tuple(*[f"low.{s}.mp3" for s in stems]).map(_fn_resample)
-        dataset = dataset.compose(_get_slices) if chunk_size is not None else dataset
+        dataset = wds.WebDataset(path, shardshuffle=shardshuffle).decode(torch_audio)
+        dataset = dataset.to_tuple(*[f"low.{s}.mp3" for s in stems]).map(_fn_resample)
+        dataset = dataset.compose(_fn_chunkize) if chunk_size is not None else dataset
         return dataset
 
 

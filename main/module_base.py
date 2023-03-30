@@ -1,3 +1,5 @@
+import functools
+import multiprocessing as mp
 import numpy as np
 from typing import Any, Callable, List, Optional, Sequence
 import audio_data_pytorch
@@ -100,12 +102,18 @@ class WebDatasetDatamodule(pl.LightningDataModule):
         self.shuffle_size = shuffle_size
         #self.save_hyperparameters()
 
-        self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
+        train_dataset = train_dataset.batched(self.batch_size)
+        train_dataset = train_dataset.map(functools.partial(torch.cat, dim=1))
+        train_dataset = train_dataset.shuffle(self.shuffle_size)
+
+        # This should help avoiding memory explosion with num_workers>0
+        self.shared_data = mp.Manager().Namespace()
+        self.shared_data.train_dataset = train_dataset
+        self.shared_data.val_dataset = val_dataset
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
-            dataset=self.train_dataset.batched(self.batch_size).map(lambda x: torch.cat(x, dim=1)).shuffle(self.shuffle_size),
+            dataset=self.shared_data.train_dataset,
             batch_size=None,
             num_workers=self.num_workers,
             pin_memory=True,
@@ -113,7 +121,7 @@ class WebDatasetDatamodule(pl.LightningDataModule):
 
     def val_dataloader(self) -> DataLoader:
         return DataLoader(
-            dataset=self.val_dataset,
+            dataset=self.shared_data.val_dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
