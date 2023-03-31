@@ -400,6 +400,11 @@ class Scale(nn.Module):
             wav[:, :] = wav[:, :] * self.scales_sampler.sample()
         return wav
 
+class SumReduce(nn.Module):
+    "Sum channels to one channel"
+    def forward(self, wav):
+        wav = torch.sum(wav, dim=0, keepdim=True)
+        return wav
 
 class TimeStretch(nn.Module):
     def __init__(

@@ -18,6 +18,7 @@ import main.utils as utils
 from main.dataset import assert_is_audio, SeparationDataset
 from main.module_base import Model
 
+
 class Separator(torch.nn.Module, abc.ABC):
     def __init__(self):
         super().__init__()
@@ -25,8 +26,8 @@ class Separator(torch.nn.Module, abc.ABC):
     @abc.abstractmethod
     def separate(mixture, num_steps) -> Mapping[str, torch.Tensor]:
         ...
-    
-    
+
+
 class ContextualSeparator(Separator):
     def __init__(self, model: Model, stems: List[str], sigma_schedule: Schedule, **kwargs):
         super().__init__()
@@ -47,7 +48,7 @@ class ContextualSeparator(Separator):
             noises=torch.randn(batch_size, len(self.stems), length_samples).to(device),
             **self.separation_kwargs,
         )
-        return {stem:y[:,i,:] for i,stem in enumerate(self.stems)}
+        return {stem:y[:, i, :] for i, stem in enumerate(self.stems)}
 
     def separate_with_hint(
         self,
@@ -81,7 +82,6 @@ class IndependentSeparator(Separator):
         self.separation_kwargs = kwargs
         self.sigma_schedule = sigma_schedule
 
-    
     def separate(self, mixture: torch.Tensor, num_steps: int):
         stems = self.stem_to_model.keys()
         models = [self.stem_to_model[s] for s in stems]
@@ -163,7 +163,6 @@ def separate_mixture(
     return x.cpu().detach()
 
 
-
 @torch.no_grad()
 def step(
     x: torch.Tensor,
@@ -175,12 +174,12 @@ def step(
     s_churn: float = 0.0, # > 0 to add randomness
     use_heun: bool = False,
     **kwargs
-):      
+):
     sigma, sigma_next = sigmas[i], sigmas[i+1]
 
     # Inject randomness
     gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1)
-    sigma_hat = sigma * (gamma + 1)            
+    sigma_hat = sigma * (gamma + 1)
     x_hat = x + torch.randn_like(x) * (sigma_hat ** 2 - sigma ** 2) ** 0.5
 
     # Compute conditioned derivative
@@ -198,7 +197,6 @@ def step(
         x = x + d_prime * (sigma_next - sigma_hat)
     
     return x
-
 
 @torch.no_grad()
 def inpaint_mixture(
@@ -224,7 +222,7 @@ def inpaint_mixture(
         for r in range(num_resamples):
             # Merge noisy source and current then denoise
             x = source_noisy * mask + x * mask.logical_not()
-            x = step(x, i, mixture=mixture, denoise_fn=fn, 
+            x = step(x, i, mixture=mixture, denoise_fn=fn, differential_fn=differential_fn,
                     sigmas=sigmas, s_churn=s_churn, use_heun=use_heun, **kwargs)  # type: ignore # noqa
             # Renoise if not last resample step
             if r < num_resamples - 1:
@@ -232,7 +230,6 @@ def inpaint_mixture(
                 x = x + sigma * torch.randn_like(x)
 
     return source * mask + x * mask.logical_not()
-
 
 
 def separate_basis_original(
