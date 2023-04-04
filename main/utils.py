@@ -12,6 +12,7 @@ from pytorch_lightning import Callback
 from pytorch_lightning.utilities import rank_zero_only
 
 
+
 def get_logger(name=__name__) -> logging.Logger:
     """Initializes multi-GPU-friendly python command line logger."""
 
@@ -202,4 +203,13 @@ def append_dims(x, target_dims):
     if dims_to_append < 0:
         raise ValueError(f'input has {x.ndim} dims but target_dims is {target_dims}, which is less')
     return x[(...,) + (None,) * dims_to_append]
+
+def from_flattened_numpy(x, shape):
+    """Form a torch tensor with the given `shape` from a flattened numpy array `x`."""
+    return torch.from_numpy(x.reshape(shape))
+
+def to_flattened_numpy(x):
+    """Flatten a torch tensor `x` and convert it to numpy."""
+    return x.detach().cpu().numpy().reshape((-1,))
+
 
