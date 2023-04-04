@@ -57,6 +57,7 @@ class ContextualSeparator(Separator):
         mask: torch.Tensor,
         num_steps:int = 100,
         ):
+        print(self.separation_kwargs)
         
         device = self.model.device
         mixture = mixture.to(device)
@@ -115,6 +116,7 @@ class IndependentSeparator(Separator):
 
 def differential_with_dirac(x, sigma, denoise_fn, mixture, source_id=0):
     num_sources = x.shape[1]
+    print(source_id)
     # + torch.randn_like(self.mixture) * sigma
     x[:, [source_id], :] = mixture - (x.sum(dim=1, keepdim=True) - x[:, [source_id], :])
     score = (x - denoise_fn(x, sigma=sigma)) / sigma
@@ -175,9 +177,12 @@ def step(
     differential_fn: Callable = differential_with_dirac,
     s_churn: float = 0.0, # > 0 to add randomness
     use_heun: bool = False,
+    source_id: int = 0,
+    gradient_mean: bool = False,
     **kwargs
 ):      
     sigma, sigma_next = sigmas[i], sigmas[i+1]
+    print(f"{gradient_mean=}")
 
     # Inject randomness
     gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1)
@@ -185,7 +190,15 @@ def step(
     x_hat = x + torch.randn_like(x) * (sigma_hat ** 2 - sigma ** 2) ** 0.5
 
     # Compute conditioned derivative
-    d = differential_fn(mixture=mixture, x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn, **kwargs)
+    if gradient_mean:
+        print("bau")
+        d_list = []
+        for i in range(4):
+            d_list.append(differential_fn(mixture=mixture, x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn, source_id=i))
+        d_tensor = torch.stack(d_list)
+        d = d_tensor.mean(0)
+    else: 
+        d = differential_fn(mixture=mixture, x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn, source_id=source_id)
 
     # Update integral
     if not use_heun or sigma_next == 0.0:
@@ -197,7 +210,8 @@ def step(
         d_2 = differential_fn(mixture=mixture, x=x_2, sigma=sigma_next, denoise_fn=denoise_fn)
         d_prime = (d + d_2) / 2
         x = x + d_prime * (sigma_next - sigma_hat)
-    
+    if not gradient_mean:
+        x[:, [source_id], :] = mixture - (x.sum(dim=1, keepdim=True) - x[:, [source_id], :])
     return x
 
 
@@ -213,20 +227,32 @@ def inpaint_mixture(
     num_resamples: int = 1,
     s_churn: float = 20.0, # > 0 to add randomness
     use_heun: bool = False,
+    source_id: int = 0,
+    gradient_mean: bool = False,
     **kwargs
 ) -> Tensor:
     
+    print(f"{gradient_mean=}")
+    
     x = sigmas[0] * noises
+    num_sources = source.shape[1]
+    if source_id == -1:
+        variable_source_id = True
+    else:
+        variable_source_id = False
 
     for i in tqdm(range(len(sigmas) - 1)):
+        if variable_source_id:
+            source_id = torch.randint(high=num_sources, size=(1,)).tolist()[0]
         # Noise source to current noise level
-
+        num_sources = x.shape[1]
         source_noisy = source + sigmas[i] * torch.randn_like(source)
         for r in range(num_resamples):
             # Merge noisy source and current then denoise
             x = source_noisy * mask + x * mask.logical_not()
             x = step(x, i, mixture=mixture, denoise_fn=fn, 
-                    sigmas=sigmas, s_churn=s_churn, use_heun=use_heun, **kwargs)  # type: ignore # noqa
+                    sigmas=sigmas, s_churn=s_churn, use_heun=use_heun, 
+                     source_id=source_id, gradient_mean=gradient_mean, **kwargs)  # type: ignore # noqa
             # Renoise if not last resample step
             if r < num_resamples - 1:
                 sigma = sqrt(sigmas[i] ** 2 - sigmas[i + 1] ** 2)
