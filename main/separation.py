@@ -116,7 +116,7 @@ class IndependentSeparator(Separator):
 
 def differential_with_dirac(x, sigma, denoise_fn, mixture, source_id=0):
     num_sources = x.shape[1]
-    print(source_id)
+    # print(source_id)
     # + torch.randn_like(self.mixture) * sigma
     x[:, [source_id], :] = mixture - (x.sum(dim=1, keepdim=True) - x[:, [source_id], :])
     score = (x - denoise_fn(x, sigma=sigma)) / sigma
@@ -182,7 +182,7 @@ def step(
     **kwargs
 ):      
     sigma, sigma_next = sigmas[i], sigmas[i+1]
-    print(f"{gradient_mean=}")
+    # print(f"{gradient_mean=}")
 
     # Inject randomness
     gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1)
@@ -191,7 +191,7 @@ def step(
 
     # Compute conditioned derivative
     if gradient_mean:
-        print("bau")
+        # print("bau")
         d_list = []
         for i in range(4):
             d_list.append(differential_fn(mixture=mixture, x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn, source_id=i))
@@ -232,7 +232,7 @@ def inpaint_mixture(
     **kwargs
 ) -> Tensor:
     
-    print(f"{gradient_mean=}")
+    # print(f"{gradient_mean=}")
     
     x = sigmas[0] * noises
     num_sources = source.shape[1]
