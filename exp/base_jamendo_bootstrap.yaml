@@ -7,7 +7,7 @@ length: 262144
 channels: 1
 min_duration: 16.5
 max_duration: 640.0
-log_every_n_steps: 2000
+log_every_n_steps: 6000
 stems: ['bass', 'drums', 'other', 'vocals']
 num_stems: 4
 
@@ -115,7 +115,8 @@ loggers:
 trainer:
   _target_: pytorch_lightning.Trainer
   gpus: 0 # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
-  precision: 32 # Precision used for tensors, default `32`
+  precision: 16 # Precision used for tensors, default `32`
+  amp_backend: 'native'
   accelerator: null # `ddp` GPUs train individually and sync gradients, default `None`
   min_epochs: 0
   max_epochs: -1
