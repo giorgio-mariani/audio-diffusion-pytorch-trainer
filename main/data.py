@@ -37,9 +37,10 @@ def load_audio(file, sr, offset, duration, resample=True, approx=False, time_bas
     audio = container.streams.get(audio=0)[0]  # Only first audio stream
     audio_duration = audio.duration * float(audio.time_base)
     if approx:
+
         if offset + duration > audio_duration * sr:
             # Move back one window. Cap at audio_duration
-            offset = np.min(audio_duration * sr - duration, offset - duration)
+            offset = min(audio_duration * sr - duration, offset - duration)
     else:
         if check_duration:
             assert (
@@ -89,7 +90,7 @@ class MultiSourceDataset(Dataset):
                 sample_length / sr < self.min_duration
         ), f"Sample length {sample_length} per sr {sr} ({sample_length / sr:.2f}) should be shorter than min duration {self.min_duration}"
         self.aug_shift = aug_shift
-        self.transform = transform if transform is not None else _identity 
+        self.transform = transform if transform is not None else _identity
         self.init_dataset()
 
     def filter(self, tracks):
@@ -153,7 +154,7 @@ class MultiSourceDataset(Dataset):
         data_list = []
         for stem in self.stems:
             data, sr = load_audio(os.path.join(self.audio_files_dir, track_name, f'{stem}.wav'),
-                                  sr=self.sr, offset=offset, duration=self.sample_length)
+                                  sr=self.sr, offset=offset, duration=self.sample_length, approx=True)
             data = 0.5 * data[0:1, :] + 0.5 * data[1:, :]
             assert data.shape == (
                 self.channels,

@@ -34,6 +34,8 @@ def _divide_in_chunks(src: wds.WebDataset, chunk_size: int):
         wav = sample[0]
         channels, length = wav.shape
 
+        assert channels == 1
+        
         for i in range(length // chunk_size):
             yield tuple(wav[:, i*chunk_size: (i+1)*chunk_size] for wav in sample)
 
@@ -52,6 +54,7 @@ def create_bootstrap_jamendo_dataset(
         dataset = wds.WebDataset(path, shardshuffle=shardshuffle).decode(torch_audio)
         dataset = dataset.to_tuple(*[f"low.{s}.mp3" for s in stems]).map(_fn_resample)
         dataset = dataset.compose(_fn_chunkize) if chunk_size is not None else dataset
+        dataset = dataset.map(functools.partial(torch.cat, dim=0))
         return dataset
 
 

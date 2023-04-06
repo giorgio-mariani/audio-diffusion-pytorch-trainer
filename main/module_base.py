@@ -94,7 +94,7 @@ class WebDatasetDatamodule(pl.LightningDataModule):
         val_dataset,
         batch_size: int = 1,
         num_workers: int = 0,
-        shuffle_size: int = 500,
+        shuffle_size: int = 200,
     ) -> None:
         super().__init__()
         self.batch_size = batch_size
@@ -102,9 +102,8 @@ class WebDatasetDatamodule(pl.LightningDataModule):
         self.shuffle_size = shuffle_size
         #self.save_hyperparameters()
 
-        train_dataset = train_dataset.batched(self.batch_size)
-        train_dataset = train_dataset.map(functools.partial(torch.cat, dim=1))
         train_dataset = train_dataset.shuffle(self.shuffle_size)
+        train_dataset = train_dataset.batched(self.batch_size, collation_fn=torch.stack)
 
         # This should help avoiding memory explosion with num_workers>0
         self.shared_data = mp.Manager().Namespace()
@@ -122,8 +121,8 @@ class WebDatasetDatamodule(pl.LightningDataModule):
     def val_dataloader(self) -> DataLoader:
         return DataLoader(
             dataset=self.shared_data.val_dataset,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
+            batch_size=16,
+            num_workers=0,
             pin_memory=True,
             shuffle=False,
         )
