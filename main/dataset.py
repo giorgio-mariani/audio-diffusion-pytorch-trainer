@@ -128,23 +128,7 @@ class SeparationDataset(Dataset, ABC):
     @abc.abstractmethod
     def sample_rate(self) -> int:
         ...
-
-
-class SeparationSubset(SeparationDataset):
-    def __init__(self, dataset: SeparationDataset, indices: List[int]):
-        self.dataset = dataset
-        self.subset = torch.utils.data.Subset(dataset, indices)
-        self.indices = indices
-
-    def __getitem__(self, item) -> Tuple[torch.Tensor, ...]:
-        return self.subset[item]
-
-    def __len__(self) -> int:
-        return len(self.subset)
-
-    @property
-    def sample_rate(self) -> int:
-        return self.dataset.sample_rate
+        
 
 
 class UnionSeparationDataset(SeparationDataset):
@@ -293,8 +277,8 @@ class ChunkedSupervisedDataset(SupervisedDataset):
         self.index_to_track, self.index_to_chunk = [], []
 
         for track in self.tracks:
-            tracks = self.get_tracks(track)
-            available_chunks = get_nonsilent_chunks(sum(tracks), max_chunk_size, min_chunk_size)
+            tracks = self.get_tracks(track) # (num_stems, [1, num_samples])
+            available_chunks = get_nonsilent_and_multi_instr_chunks(tracks, max_chunk_size, min_chunk_size)
             self.available_chunk[track] = available_chunks
             self.index_to_track.extend([track] * len(available_chunks))
             self.index_to_chunk.extend(available_chunks)
@@ -316,6 +300,42 @@ class ChunkedSupervisedDataset(SupervisedDataset):
         tracks = self.get_tracks(self.get_chunk_track(item))
         tracks = tuple([t[:, chunk_start:chunk_stop] for t in tracks])
         return tracks
+    
+class ChunkedSeparationSubset(ChunkedSupervisedDataset):    
+    def __init__(self, dataset: SeparationDataset, indices: List[int]):
+        self.dataset = dataset
+        self.subset = torch.utils.data.Subset(dataset, indices)
+        self.indices = indices
+        self.index_to_track = self.dataset.index_to_track
+        self.index_to_chunk = self.dataset.index_to_chunk
+        self.max_chunk_size = self.dataset.max_chunk_size
+
+    def __getitem__(self, item) -> Tuple[torch.Tensor, ...]:
+        return self.subset[item]
+
+    def __len__(self) -> int:
+        return len(self.subset)
+
+    @property
+    def sample_rate(self) -> int:
+        return self.dataset.sample_rate
+
+class SeparationSubset(SupervisedDataset):
+    def __init__(self, dataset: SeparationDataset, indices: List[int]):
+        self.dataset = dataset
+        self.subset = torch.utils.data.Subset(dataset, indices)
+        self.indices = indices
+
+    def __getitem__(self, item) -> Tuple[torch.Tensor, ...]:
+        return self.subset[item]
+
+    def __len__(self) -> int:
+        return len(self.subset)
+
+    @property
+    def sample_rate(self) -> int:
+        return self.dataset.sample_rate
+
 
 #@functools.lru_cache(128)
 @torch.no_grad()
@@ -342,21 +362,35 @@ def is_silent(signal: torch.Tensor, silence_threshold: float = 1.5e-5) -> bool:
     return torch.linalg.norm(signal) / num_samples < silence_threshold
 
 
-def get_nonsilent_chunks(
-    track: torch.Tensor,
+def is_multi_source(signal: torch.Tensor, silence_threshold: float = 1.5e-5) -> bool:
+    num_silent_signals = 0
+    for source in signal:
+        if is_silent(source.unsqueeze(0), silence_threshold):
+            num_silent_signals += 1
+        if num_silent_signals > 2:
+            return False
+    return True  
+    
+
+def get_nonsilent_and_multi_instr_chunks(
+    separated_track: Tuple[torch.Tensor],
     max_chunk_size: int,
     min_chunk_size: int = 0,
 ):
-    assert_is_audio(track)
-    _, num_samples = track.shape
+    for source in separated_track:
+        assert_is_audio(source)
+    separated_track = torch.cat(separated_track)
+    #track = separated_track.sum(0, keepdims=True)
+    #assert_is_audio(track)
+    _, num_samples = separated_track.shape
     num_chunks = num_samples // max_chunk_size + int(num_samples % max_chunk_size != 0)
 
     available_chunks = []
     for i in range(num_chunks):
-        chunk = track[:, i * max_chunk_size : (i + 1) * max_chunk_size]
+        chunk = separated_track[:, i * max_chunk_size : (i + 1) * max_chunk_size]
         _, chunk_samples = chunk.shape
 
-        if not is_silent(chunk) and chunk_samples >= min_chunk_size:
+        if not is_silent(chunk.sum(0, keepdims=True)) and is_multi_source(chunk) and chunk_samples >= min_chunk_size:
             available_chunks.append(i)
 
     return available_chunks

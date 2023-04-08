@@ -1,9 +1,12 @@
 from collections import defaultdict
 import json
+import os
 from pathlib import Path
 from pathlib import Path
 import re
 from typing import List, Mapping, Optional, Tuple, Union
+import main.module_base
+from script.misc import hparams
 
 import numpy as np
 #import museval
@@ -15,6 +18,9 @@ import torchmetrics.functional.audio as tma
 from tqdm import tqdm
 from torchaudio.transforms import Resample
 
+from main.dataset import is_silent
+from main.likelihood import log_likelihood_song
+
 
 def sdr(preds: torch.Tensor, target: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
     s_target = torch.norm(target, dim=-1)**2 + eps
@@ -22,7 +28,7 @@ def sdr(preds: torch.Tensor, target: torch.Tensor, eps: float = 1e-5) -> torch.T
     return 10 * torch.log10(s_target/s_error)
 
 
-def sisnr(preds: torch.Tensor, target: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+def sisnr(preds: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     alpha = (torch.sum(preds * target, dim=-1, keepdim=True) + eps) / (torch.sum(target**2, dim=-1, keepdim=True) + eps)
     target_scaled = alpha * target
     noise = target_scaled - preds
@@ -107,9 +113,9 @@ def evaluate_chunks(separation_path: Union[str, Path], filter_silence: bool = Tr
 def evaluate_tracks(separation_path: Union[str, Path], orig_sr: int = 44100, resample_sr: Optional[int] = None):
     separation_folder = Path(separation_path)
     assert separation_folder.exists(), separation_folder
-    assert (separation_folder / "chunk_data.json").exists(), separation_folder
+    assert (separation_folder.parent / "chunk_data.json").exists(), separation_folder
 
-    with open(separation_folder / "chunk_data.json") as f:
+    with open(separation_folder.parent / "chunk_data.json") as f:
         chunk_data = json.load(f)
 
     resample_fn = Resample(orig_freq=orig_sr, new_freq=resample_sr) if resample_sr is not None else lambda x: x
@@ -151,14 +157,26 @@ def evaluate_tracks(separation_path: Union[str, Path], orig_sr: int = 44100, res
     return pd.DataFrame.from_records(track_to_sdr).transpose()
 
 
-def evaluate_tracks_chunks(separation_path: Union[str, Path], chunk_size: int, orig_sr: int = 44100, resample_sr: Optional[int] = None):
+def evaluate_tracks_chunks(separation_path: Union[str, Path], chunk_prop: int, 
+                           orig_sr: int = 44100, resample_sr: Optional[int] = None, 
+                           filter_single_source: bool = True, eps: float = 10-8):
 
     separation_folder = Path(separation_path)
     assert separation_folder.exists(), separation_folder
-    assert (separation_folder / "chunk_data.json").exists(), separation_folder
+    assert (separation_folder.parent / "chunk_data.json").exists(), separation_folder
 
-    with open(separation_folder / "chunk_data.json") as f:
+    with open(separation_folder.parent / "chunk_data.json") as f:
         chunk_data = json.load(f)
+        
+    def load_model(path):
+        model = main.module_base.Model(**{**hparams, "in_channels": 4})
+        model.load_state_dict(torch.load(path)["state_dict"])
+        model.to("cuda:0")
+        return model
+    
+    ckpts_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
+    model = load_model(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt")
+    denoise_fn = model.model.diffusion.denoise_fn
 
     resample_fn = Resample(orig_freq=orig_sr, new_freq=resample_sr) if resample_sr is not None else lambda x: x
 
@@ -190,13 +208,37 @@ def evaluate_tracks_chunks(separation_path: Union[str, Path], chunk_size: int, o
             original_tensors[k] = resample_fn(torch.cat(original_wavs[k], dim=-1).view(-1))
 
         mixture = sum([owav for owav in original_tensors.values()])
+        chunk_size = int(separated_tensors["1"].shape[0] * chunk_prop)
 
+        generated_mixture = torch.stack([separated_tensors[k] for k in separated_tensors]).unsqueeze(0).to("cuda:0")
+        for k in separated_tensors:
+            o = original_tensors[k]
+            s = separated_tensors[k]
+            m = mixture
+            padded_source = torch.zeros((1, 4, s.shape[-1]))
+            j = int(k) -1
+            padded_source[:, j:j+1, :] = s
+            lik, _, _ = log_likelihood_song(denoise_fn, padded_source.to("cuda:0"), sigma_max=1.0) # Hard coded sigma_max
+            for i in range(mixture.shape[-1] // chunk_size):
+                results[f"log_lik_{k}"].append(lik.item())
+        lik, _, _ = log_likelihood_song(denoise_fn, generated_mixture, sigma_max=1.0)
         for i in range(mixture.shape[-1] // chunk_size):
+            results[f"log_lik_mixture"].append(lik.item())
+            
+        for i in range(mixture.shape[-1] // chunk_size):
+            num_silent_signals = 0
             for k in separated_tensors:
                 o = original_tensors[k][i*chunk_size:(i+1)*chunk_size]
-                s = separated_tensors[k][i*chunk_size: (i+1)*chunk_size]
-                m = mixture[i*chunk_size: (i+1)*chunk_size]
-                results[k].append((sisnr(s, o) - sisnr(m, o)).item())
+                if is_silent(o.unsqueeze(0)) and filter_single_source:
+                    num_silent_signals += 1
+            if num_silent_signals > 3:
+                continue
+            else:
+                for k in separated_tensors:
+                    o = original_tensors[k][i*chunk_size:(i+1)*chunk_size]
+                    s = separated_tensors[k][i*chunk_size: (i+1)*chunk_size]
+                    m = mixture[i*chunk_size: (i+1)*chunk_size]
+                    results[k].append((sisnr(s, o, eps) - sisnr(m, o, eps)).item())
 
     return pd.DataFrame(results)
 
@@ -222,3 +264,8 @@ def read_ablation_results(sep_dir: Union[str, Path], orig_sr: int = 44100, filte
             records.append({**hparams, **hparams_results})
 
     return pd.DataFrame.from_records(records)
+
+if __name__ == "__main__":  
+    print(f"{os.getcwd()=}")
+    results = evaluate_tracks_chunks("separations/debug/sep_round_0", chunk_prop=1/3, orig_sr=22050, eps=1e-8)
+    print("bau")

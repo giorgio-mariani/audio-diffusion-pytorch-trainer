@@ -7,11 +7,9 @@ from typing import List, Callable, Mapping, Union
 import torch
 import tqdm
 from audio_diffusion_pytorch import KarrasSchedule
-from torch.utils.data import Dataset
 import numpy
-import numpy as np
 
-from main.dataset import ResampleDataset, SeparationDataset, ChunkedSupervisedDataset, SeparationSubset, TransformDataset
+from main.dataset import ChunkedSeparationSubset, ResampleDataset, SeparationDataset, ChunkedSupervisedDataset, SeparationSubset, TransformDataset
 from main.separation import IndependentSeparator, ContextualSeparator, separate_dataset, differential_with_dirac, differential_with_gaussian
 from script.misc import load_model, load_audio, load_context
 from pathlib import Path
@@ -441,18 +439,37 @@ def context_musdb_4stems(output_dir: Union[str, Path]):
         json.dump(chunk_data, f)
 
 @torch.no_grad()
-def context_slakh_4stems(output_dir: Union[str, Path]):
+def context_slakh_4stems(
+        output_dir: Union[str, Path],
+        num_samples: int = -1,
+        s_churn: float = 20.,
+        num_resamples: int = 1,
+        source_id: int = 0,
+        gradient_mean: bool = False,
+        num_steps: int = 150,
+        batch_size: int = 16,
+        num_separations: int = 1,
+        num_gibbs_steps: int = 1,
+        hint_fixed_sources_idx: List[int] = []
+    ):
     output_dir = Path(output_dir)
     device = torch.device("cuda:0")
-    sigma_min, sigma_max, s_churn, source_id = 1e-4, 1.0, 20.0, 0
+    sigma_min, sigma_max = 1e-4, 1.0
 
     dataset = ChunkedSupervisedDataset(
-        audio_dir="/home/giorgio_mariani/audio-diffusion-pytorch-trainer/data/Slakh/test",
+        audio_dir="/home/irene/Documents/audio-diffusion-pytorch-trainer/data/Slakh_track_first/test",
         stems=["bass", "drums", "guitar", "piano"],
         sample_rate=44100,
         max_chunk_size=262144 * 2,
         min_chunk_size=262144 * 2,
     )
+    
+    if num_samples != -1:
+        generator = torch.Generator().manual_seed(1)
+        indices = torch.randint(high=len(dataset), size=(num_samples,), dtype=torch.int, generator=generator).tolist()
+        dataset = ChunkedSeparationSubset(dataset, indices=indices)
+    else:
+        indices = list(range(len(dataset)))
 
     resampled_dataset = ResampleDataset(dataset=dataset, new_sample_rate=22050)
     ckpts_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
@@ -464,34 +481,46 @@ def context_slakh_4stems(output_dir: Union[str, Path]):
         model=model,
         stems=["bass", "drums", "guitar", "piano"],
         sigma_schedule=KarrasSchedule(sigma_min=sigma_min, sigma_max=sigma_max, rho=7.0),
+        differential_fn=differential_with_dirac,
         s_churn=s_churn,
-        differential_fn=functools.partial(differential_with_dirac, source_id=source_id)
+        num_resamples=num_resamples,
+        source_id=source_id,
+        gradient_mean=gradient_mean,
     )
 
     chunk_data = []
-    for i in range(len(dataset)):
+        
+    for i in range(len(indices)):
         start_sample, end_sample = dataset.get_chunk_indices(i)
         chunk_data.append(
             {
                 "chunk_index": i,
-                "track": dataset.get_chunk_track(i),
+                "track": dataset.get_chunk_track(indices[i]),
                 "start_chunk_sample": start_sample,
                 "end_chunk_sample": end_sample,
                 "start_chunk_seconds": start_sample / 44100,
                 "end_chunk_in_seconds": end_sample / 44100,
             }
         )
-
-    separate_dataset(
-        dataset=resampled_dataset,
-        separator=separator,
-        save_path=output_dir,
-        num_steps=200,
-    )
+    
+    for n in range(num_separations):
+        separate_dataset(
+            dataset=resampled_dataset,
+            separator=separator,
+            save_path=output_dir / f"sep_round_{n}",
+            num_steps=num_steps,
+            hint_fixed_sources_idx=hint_fixed_sources_idx,
+            batch_size=batch_size,
+            num_gibbs_steps=num_gibbs_steps
+        )
 
     with open(output_dir / "chunk_data.json", "w") as f:
         json.dump(chunk_data, f)
 
 
 if __name__ == "__main__":
-    context_slakh_4stems("separation/complete_context_musdb_4stems")
+    # source_id = -1 changes the source at each separation step
+    # nota, se trova gia output_dir non la sovrascrive, devi cancellarla a mano (ed è giusto così ahaha)
+    context_slakh_4stems(output_dir="separations/debug", num_samples=3, num_steps=150, batch_size=16, 
+                         source_id=0, gradient_mean=False, num_resamples=1, s_churn=20., 
+                         num_separations=2, num_gibbs_steps=1, hint_fixed_sources_idx=[])

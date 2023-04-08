@@ -1,6 +1,6 @@
 import abc
 from pathlib import Path
-from typing import List, Optional, Callable, Tuple, Mapping
+from typing import List, Optional, Callable, Mapping
 
 import numpy as np
 import torch
@@ -9,7 +9,7 @@ import tqdm
 from torch import Tensor
 from math import sqrt
 
-from audio_diffusion_pytorch.diffusion import Sampler, KarrasSchedule, Schedule
+from audio_diffusion_pytorch.diffusion import Schedule
 from torch.utils.data import DataLoader
 
 from main.dataset import assert_is_audio, SeparationDataset
@@ -45,6 +45,32 @@ class ContextualSeparator(Separator):
             **self.separation_kwargs,
         )
         return {stem:y[:,i:i+1,:] for i,stem in enumerate(self.stems)}
+    
+    def separate_with_hint(
+        self,
+        mixture: torch.Tensor,
+        source_with_hint: torch.Tensor,
+        mask: torch.Tensor,
+        num_steps:int = 100,
+        ):
+        print(f"{self.separation_kwargs=}")
+        
+        device = self.model.device
+        mixture = mixture.to(device)
+        batch_size, _, length_samples = mixture.shape
+
+        y = inpaint_mixture(
+            source = source_with_hint,
+            mask = mask,
+            mixture = mixture,
+            fn = self.model.model.diffusion.denoise_fn,
+            sigmas = self.sigma_schedule(num_steps, device),
+            noises=torch.randn(batch_size, len(self.stems), length_samples).type_as(source_with_hint),
+            **self.separation_kwargs,
+        )
+
+        return {stem:y[:,i:i+1,:] for i,stem in enumerate(self.stems)}
+
 
 
 class IndependentSeparator(Separator):
@@ -81,17 +107,112 @@ class IndependentSeparator(Separator):
         )
         return {stem:y[:,i:i+1,:] for i, stem in enumerate(stems)}
 
-# Algorithms ------------------------------------------------------------------
-
 
 def differential_with_dirac(x, sigma, denoise_fn, mixture, source_id=0):
     num_sources = x.shape[1]
-    # + torch.randn_like(self.mixture) * sigma
-    x[:, source_id, :] = mixture - (x.sum(dim=[1], keepdim=True) - x[:, source_id, :])
+    x[:, [source_id], :] = mixture - (x.sum(dim=1, keepdim=True) - x[:, [source_id], :])
     score = (x - denoise_fn(x, sigma=sigma)) / sigma
     scores = [score[:, si] for si in range(num_sources)]
     ds = [s - score[:, source_id] for s in scores]
     return torch.stack(ds, dim=1)
+
+
+@torch.no_grad()
+def step(
+    x: torch.Tensor,
+    i: int,
+    mixture: torch.Tensor, 
+    denoise_fn: Callable,
+    sigmas: torch.Tensor,
+    differential_fn: Callable = differential_with_dirac,
+    s_churn: float = 0.0, # > 0 to add randomness
+    use_heun: bool = False,
+    source_id: int = 0,
+    gradient_mean: bool = False
+): 
+    num_sources = x.shape[1]
+    if source_id == -1:
+        variable_source_id = True
+    else:
+        variable_source_id = False
+    if variable_source_id:
+            source_id = torch.randint(high=num_sources, size=(1,)).tolist()[0]     
+    sigma, sigma_next = sigmas[i], sigmas[i+1]
+
+    # Inject randomness
+    gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1)
+    sigma_hat = sigma * (gamma + 1)            
+    x_hat = x + torch.randn_like(x) * (sigma_hat ** 2 - sigma ** 2) ** 0.5
+
+    # Compute conditioned derivative
+    if gradient_mean:
+        d_list = []
+        for i in range(4):
+            d_list.append(differential_fn(mixture=mixture, x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn, source_id=i))
+        d_tensor = torch.stack(d_list)
+        d = d_tensor.mean(0)
+    else: 
+        d = differential_fn(mixture=mixture, x=x_hat, sigma=sigma_hat, denoise_fn=denoise_fn, source_id=source_id)
+
+    # Update integral
+    if not use_heun or sigma_next == 0.0:
+        # Euler method
+        x = x_hat + d * (sigma_next - sigma_hat) 
+    else:
+        # Heun's method
+        x_2 = x_hat + d * (sigma_next - sigma_hat)
+        d_2 = differential_fn(mixture=mixture, x=x_2, sigma=sigma_next, denoise_fn=denoise_fn)
+        d_prime = (d + d_2) / 2
+        x = x + d_prime * (sigma_next - sigma_hat)
+    if not gradient_mean:
+        x[:, [source_id], :] = mixture - (x.sum(dim=1, keepdim=True) - x[:, [source_id], :])
+    return x
+
+@torch.no_grad()
+def inpaint_mixture(
+    source: Tensor,
+    mask: Tensor,
+    mixture: Tensor,
+    fn: Callable,
+    sigmas: Tensor,
+    noises: Tensor,
+    num_resamples: int = 1,
+    **kwargs
+) -> Tensor:
+        
+    x = sigmas[0] * noises
+    sigmas = sigmas.to(source.device)
+
+    for i in tqdm.tqdm(range(len(sigmas) - 1)):
+        # Noise source to current noise level
+        source_noisy = source + sigmas[i] * torch.randn_like(source)
+        for r in range(num_resamples):
+            # Merge noisy source and current then denoise
+            x = source_noisy * mask + x * mask.logical_not()
+            x = step(x, i, mixture=mixture, denoise_fn=fn, sigmas=sigmas, **kwargs)  # type: ignore # noqa
+            # Renoise if not last resample step
+            if r < num_resamples - 1:
+                sigma = sqrt(sigmas[i] ** 2 - sigmas[i + 1] ** 2)
+                x = x + sigma * torch.randn_like(x)
+
+    return source * mask + x * mask.logical_not()
+
+
+# Algorithms ------------------------------------------------------------------
+
+
+def generate_mask_and_sources(sources, fixed_sources_idx=[]):
+    batch_size = sources.shape[0]
+    num_stems = sources.shape[1]
+    length_samples = sources.shape[-1]
+    mobile_sources_idx = list(set([0,1,2,3]) - set(fixed_sources_idx))
+    mobile_sources_idx.sort()
+    inpaint                = torch.randn(batch_size, num_stems, length_samples).type_as(sources)
+    if len(fixed_sources_idx) > 0:
+        inpaint[:, fixed_sources_idx, :]       = sources[:, fixed_sources_idx, :]
+    inpaint_mask           = torch.ones_like(inpaint)
+    inpaint_mask[:, mobile_sources_idx, :] = 0.
+    return inpaint, inpaint_mask
 
 
 def differential_with_gaussian(x, sigma, denoise_fn, mixture, gamma_fn=None):
@@ -193,8 +314,20 @@ def separate_dataset(
     separator: Separator,
     num_steps: int,
     save_path: str = "evaluation_results",
-    resume: bool = False
+    resume: bool = False,
+    hint_fixed_sources_idx = None,
+    batch_size: int = 16, 
+    num_gibbs_steps: int = 1,
 ):
+    def schedule_prob(t, T, alpha=0.95):
+        p_max = (T - 1) / T
+        p_min = p_max * (1 - alpha)
+        if T > 1:
+            p_t = 1 - max(0, p_max - (t - 1) * (p_max - p_min) / (alpha * (T - 1)))
+        else:
+            p_t = 0.
+        return p_t
+
 
     # convert paths
     save_path = Path(save_path)
@@ -202,33 +335,61 @@ def separate_dataset(
         raise ValueError(f"Path {save_path} already exists!")
 
     # get samples
-    loader = DataLoader(dataset, batch_size=1, num_workers=8)
+    loader = DataLoader(dataset, batch_size=batch_size, num_workers=16, shuffle=False)
 
     # main loop
-    save_path.mkdir(exist_ok=True)
+    save_path.mkdir(exist_ok=True, parents=True)
+    chunk_id = 0
     for batch_idx, batch in enumerate(tqdm.tqdm(loader)):
-        chunk_path = save_path / f"{batch_idx}"
-        if chunk_path.exists():
-            print(f"Skipping path: {chunk_path}")
-            continue
+        # chunk_path = save_path / f"{batch_idx}"
+        # if chunk_path.exists():
+        #     print(f"Skipping path: {chunk_path}")
+        #     continue
 
         # load audio tracks
-        tracks = batch
-        print(f"chunk {batch_idx+1} out of {len(dataset)}")
+        tracks = []
+        for b in batch:
+            tracks.append(b.to("cuda:0"))
+        print(f"batch {batch_idx+1} out of {len(dataset)}")
         
         # generate mixture
         mixture = sum(tracks)
-        seps = separator.separate(mixture=mixture, num_steps=num_steps)
-        chunk_path.mkdir(parents=True)
+        tracks_tensor = torch.cat(tracks, dim=1)
+        if hint_fixed_sources_idx is not None :
+            sources_idx=torch.arange(4, device=mixture.device)
+            seps = tracks_tensor
+            for i in tqdm.tqdm(range(num_gibbs_steps)):
+                p = schedule_prob(i, num_gibbs_steps)
+                mask = torch.bernoulli(torch.ones(4, device=mixture.device) * p).bool()
+                if len(hint_fixed_sources_idx) > 0:
+                    seps[:, hint_fixed_sources_idx, :] = tracks_tensor[:, hint_fixed_sources_idx, :]
+                inpaint, inpaint_mask = generate_mask_and_sources(
+                    sources=seps,
+                    fixed_sources_idx = sources_idx[mask].tolist() + hint_fixed_sources_idx
+                )
+                seps_dict = separator.separate_with_hint(
+                    mixture=mixture, 
+                    num_steps=num_steps, 
+                    source_with_hint=inpaint,
+                    mask=inpaint_mask
+                )
+                seps = torch.cat([seps_dict["bass"], seps_dict["drums"], seps_dict["guitar"], seps_dict["piano"]], dim=1)
+        else:
+            seps_dict = separator.separate(mixture=mixture, num_steps=num_steps)
 
         # save separated audio
-        save_separation(
-            separated_tracks=[sep.squeeze(0) for sep in seps.values()],
-            original_tracks=[track.squeeze(0) for track in tracks],
-            sample_rate=dataset.sample_rate,
-            chunk_path=chunk_path,
-        )
-        del seps, tracks
+        num_samples = tracks[0].shape[0]
+        for i in range(num_samples):
+            chunk_path = save_path / f"{chunk_id}"
+            chunk_path.mkdir(parents=True)
+            save_separation(
+                separated_tracks=[sep[i].unsqueeze(0) for sep in seps_dict.values()],
+                original_tracks=[track[i].unsqueeze(0) for track in tracks],
+                sample_rate=dataset.sample_rate,
+                chunk_path=chunk_path,
+            )
+            chunk_id += 1
+        del seps_dict, tracks
 
 
 def save_separation(
@@ -237,12 +398,18 @@ def save_separation(
     sample_rate: int,
     chunk_path: Path,
 ):
-    assert_is_audio(*original_tracks, *separated_tracks)
-    #assert original_1.shape == original_2.shape == separation_1.shape == separation_2.shape
-    assert len(original_tracks) == len(separated_tracks)
-    for i, (ori, sep) in enumerate(zip(original_tracks, separated_tracks)):
-        torchaudio.save(chunk_path / f"ori{i+1}.wav", ori.cpu(), sample_rate=sample_rate)
-        torchaudio.save(chunk_path / f"sep{i+1}.wav", sep.cpu(), sample_rate=sample_rate)
+    separated_tracks_tensor = torch.cat(separated_tracks, dim=1)
+    original_tracks_tensor = torch.cat(original_tracks, dim=1)
+    
+    for separated_track, original_track in zip(separated_tracks_tensor, original_tracks_tensor):
+        original_track = [track.unsqueeze(0) for track in original_track]
+        separated_track = [track.unsqueeze(0) for track in separated_track]
+        assert_is_audio(*original_track, *separated_track)
+        # assert original_1.shape == original_2.shape == separation_1.shape == separation_2.shape
+        assert len(original_tracks) == len(separated_tracks)
+        for i, (ori, sep) in enumerate(zip(original_track, separated_track)):
+            torchaudio.save(chunk_path / f"ori{i+1}.wav", ori.cpu(), sample_rate=sample_rate)
+            torchaudio.save(chunk_path / f"sep{i+1}.wav", sep.cpu(), sample_rate=sample_rate)
 
 
 def enforce_mixture_consistency(
