@@ -7,13 +7,12 @@ import re
 from typing import List, Mapping, Optional, Tuple, Union
 import main.module_base
 from script.misc import hparams
+import math
 
-import numpy as np
 #import museval
 import pandas as pd
 import torch
 import torchaudio
-import torchmetrics.functional.audio as tma
 #from evaluation.evaluate_separation import evaluate_data
 from tqdm import tqdm
 from torchaudio.transforms import Resample
@@ -244,6 +243,106 @@ def evaluate_tracks_chunks(separation_path: Union[str, Path], chunk_prop: int,
     #print(results)
     return pd.DataFrame(results)
 
+def evaluate_tracks_chunks_simplified(separation_path: Union[str, Path],
+                           orig_sr: int = 44100, resample_sr: Optional[int] = None, 
+                           filter_single_source: bool = True, eps: float = 10-8, compute_likelihood = False,
+                           chunk_duration: float = 4.0, overlap_duration: float = 2.0):
+
+    separation_folder = Path(separation_path)
+    assert separation_folder.exists(), separation_folder
+    assert (separation_folder / "chunk_data.json").exists(), separation_folder
+    # assert (separation_folder.parent / "chunk_data.json").exists(), separation_folder
+
+    with open(separation_folder / "chunk_data.json") as f:
+        chunk_data = json.load(f)
+        
+    def load_model(path):
+        model = main.module_base.Model(**{**hparams, "in_channels": 4})
+        model.load_state_dict(torch.load(path)["state_dict"])
+        model.to("cuda:0")
+        return model
+    
+    ckpts_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
+    model = load_model(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt")
+    denoise_fn = model.model.diffusion.denoise_fn
+    
+    track_to_chunks = defaultdict(list)
+    for chunk_data in chunk_data:
+        track = chunk_data["track"]
+        chunk_idx = chunk_data["chunk_index"]
+        start_sample = chunk_data["start_chunk_sample"]
+        track_to_chunks[track].append( (start_sample, chunk_idx) )
+
+    # reorder chunks into ascending order and compute sdr
+    results = defaultdict(list)
+    # for every iteration, chunks contains the list of chunks associated to a track 
+    count = 0
+    for chunk_folder in tqdm(separation_path.iterdir()):
+                        
+        try:
+            original_tracks, separated_tracks, sr = load_chunks(chunk_folder)   
+            assert sr == orig_sr, f"chunk [{chunk_folder.name}]: expected freq={orig_sr}, track freq={sr}"   
+            mixture = sum([owav for owav in original_tracks.values()])
+            
+            chunk_samples = chunk_duration * orig_sr
+            overlap_samples = overlap_duration * orig_sr
+            
+            chunk_samples = int(chunk_duration * orig_sr)
+            
+            overlap_samples = int(overlap_duration * orig_sr)
+
+            # Calculate the step size between consecutive chunks
+            step_size = chunk_samples - overlap_samples
+
+            # Determine the number of chunks based on step_size
+            num_chunks = math.ceil((mixture.shape[-1] - overlap_samples) / step_size)
+            #print(mixture.shape)
+            
+            if compute_likelihood:
+                compute_likelihood_value(separated_tracks, denoise_fn, num_chunks)
+                
+            for i in range(num_chunks):
+                start_sample = i * step_size
+                end_sample = start_sample + chunk_samples
+                
+                num_silent_signals = 0
+                
+                for k in separated_tracks:
+                    o = original_tracks[k][:,start_sample:end_sample]
+                
+                    if is_silent(o) and filter_single_source:
+                        num_silent_signals += 1
+                
+                if num_silent_signals > 3:
+                    count += 1
+                    continue
+                else:
+                    for k in separated_tracks:
+                        o = original_tracks[k][:,start_sample:end_sample]
+                        s = separated_tracks[k][:,start_sample:end_sample]
+                        m = mixture[:,start_sample:end_sample]
+                        results[k].append((sisnr(s, o, eps) - sisnr(m, o, eps)).item())
+        except:
+            continue
+    return pd.DataFrame(results)
+
+
+def compute_likelihood_value(separated_tracks, denoise_fn, num_chunks, results):
+    separated_tensor = torch.stack([separated_tracks[k] for k in separated_tracks]).to("cuda:0")
+    separated_tensor = separated_tensor.permute(1, 0, 2)
+    for k in separated_tracks:
+        s = separated_tracks[k]
+        padded_source = torch.zeros((1, 4, s.shape[-1]))
+        j = int(k) -1
+        padded_source[:, j:j+1, :] = s
+        lik, _, _ = log_likelihood_song(denoise_fn, padded_source.to("cuda:0"), sigma_max=1.0) # Hard coded sigma_max
+        for _ in range(num_chunks):
+            results[f"log_lik_{k}"].append(lik.item())
+    lik, _, _ = log_likelihood_song(denoise_fn, separated_tensor, sigma_max=1.0)
+    
+    for _ in range(num_chunks):
+        results[f"log_lik_mixture"].append(lik.item())
+    
 def read_ablation_results(sep_dir: Union[str, Path], orig_sr: int = 44100, filter_silence: bool = False):
     sep_dir = Path(sep_dir)
 
@@ -269,5 +368,7 @@ def read_ablation_results(sep_dir: Union[str, Path], orig_sr: int = 44100, filte
 
 if __name__ == "__main__":  
     print(f"{os.getcwd()=}")
-    results = evaluate_tracks_chunks("separations/debug/sep_round_0", chunk_prop=1/3, orig_sr=22050, eps=1e-8)
+    results = evaluate_tracks_chunks_simplified(Path("separations/complete_context_slakh_4stems_resamples"), 
+                                                orig_sr=22050, eps=1e-8,
+                                                compute_likelihood=False)
     print("bau")

@@ -465,8 +465,9 @@ def context_slakh_4stems(
     )
     
     if num_samples != -1:
-        generator = torch.Generator().manual_seed(1)
-        indices = torch.randint(high=len(dataset), size=(num_samples,), dtype=torch.int, generator=generator).tolist()
+        #generator = torch.Generator().manual_seed(1)
+        #indices = torch.randint(high=len(dataset), size=(num_samples,), dtype=torch.int, generator=generator).tolist()
+        indices = [0, 1, 2]
         dataset = ChunkedSeparationSubset(dataset, indices=indices)
     else:
         indices = list(range(len(dataset)))
