@@ -521,6 +521,7 @@ def context_slakh_4stems(
 if __name__ == "__main__":
     # source_id = -1 changes the source at each separation step
     # nota, se trova gia output_dir non la sovrascrive, devi cancellarla a mano (ed è giusto così ahaha)
+    # Se num_samples = -1 separa tutto il dataset
     context_slakh_4stems(output_dir="separations/debug", num_samples=3, num_steps=150, batch_size=16, 
                          source_id=0, gradient_mean=False, num_resamples=1, s_churn=20., 
                          num_separations=2, num_gibbs_steps=1, hint_fixed_sources_idx=[])

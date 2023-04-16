@@ -218,12 +218,14 @@ def evaluate_tracks_chunks(separation_path: Union[str, Path], chunk_prop: int,
             padded_source = torch.zeros((1, 4, s.shape[-1]))
             j = int(k) -1
             padded_source[:, j:j+1, :] = s
-            lik, _, _ = log_likelihood_song(denoise_fn, padded_source.to("cuda:0"), sigma_max=1.0) # Hard coded sigma_max
-            for i in range(mixture.shape[-1] // chunk_size):
-                results[f"log_lik_{k}"].append(lik.item())
-        lik, _, _ = log_likelihood_song(denoise_fn, generated_mixture, sigma_max=1.0)
-        for i in range(mixture.shape[-1] // chunk_size):
-            results[f"log_lik_mixture"].append(lik.item())
+            lik = torch.zeros(1)
+            #lik, _, _ = log_likelihood_song(denoise_fn, padded_source.to("cuda:0"), sigma_max=1.0) # Hard coded sigma_max
+            #for i in range(mixture.shape[-1] // chunk_size):
+            #    results[f"log_lik_{k}"].append(lik.item())
+        #lik, _, _ = log_likelihood_song(denoise_fn, generated_mixture, sigma_max=1.0)
+        
+        #for i in range(mixture.shape[-1] // chunk_size):
+        #    results[f"log_lik_mixture"].append(lik.item())
             
         for i in range(mixture.shape[-1] // chunk_size):
             num_silent_signals = 0
@@ -239,7 +241,7 @@ def evaluate_tracks_chunks(separation_path: Union[str, Path], chunk_prop: int,
                     s = separated_tensors[k][i*chunk_size: (i+1)*chunk_size]
                     m = mixture[i*chunk_size: (i+1)*chunk_size]
                     results[k].append((sisnr(s, o, eps) - sisnr(m, o, eps)).item())
-
+    #print(results)
     return pd.DataFrame(results)
 
 def read_ablation_results(sep_dir: Union[str, Path], orig_sr: int = 44100, filter_silence: bool = False):
