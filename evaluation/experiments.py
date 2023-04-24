@@ -450,7 +450,8 @@ def context_slakh_4stems(
         batch_size: int = 16,
         num_separations: int = 1,
         num_gibbs_steps: int = 1,
-        hint_fixed_sources_idx: List[int] = []
+        hint_fixed_sources_idx: List[int] = [],
+        resume = False
     ):
     output_dir = Path(output_dir)
     device = torch.device("cuda:0")
@@ -463,15 +464,16 @@ def context_slakh_4stems(
         max_chunk_size=262144 * 2,
         min_chunk_size=262144 * 2,
     )
-    
+    #print("len(dataset)", len(dataset))
     if num_samples != -1:
-        #generator = torch.Generator().manual_seed(1)
+        print("num_samples",num_samples)
+        generator = torch.Generator().manual_seed(1)
         #indices = torch.randint(high=len(dataset), size=(num_samples,), dtype=torch.int, generator=generator).tolist()
-        indices = [0, 1, 2]
-        dataset = ChunkedSeparationSubset(dataset, indices=indices)
+        indices = torch.randperm(len(dataset), dtype=torch.int, generator=generator)[:num_samples].tolist()
     else:
         indices = list(range(len(dataset)))
-
+        
+    dataset = ChunkedSeparationSubset(dataset, indices=indices)
     resampled_dataset = ResampleDataset(dataset=dataset, new_sample_rate=22050)
     ckpts_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
     model_cpu = load_context(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt", "cpu", 4)
@@ -490,9 +492,13 @@ def context_slakh_4stems(
     )
 
     chunk_data = []
+    #print("len(dataset)",len(dataset))
+    #print("len(indices)",len(indices))
+    print("indices",indices)
         
     for i in range(len(indices)):
-        start_sample, end_sample = dataset.get_chunk_indices(i)
+        # print("i",i)
+        start_sample, end_sample = dataset.get_chunk_indices(indices[i])
         chunk_data.append(
             {
                 "chunk_index": i,
@@ -503,6 +509,9 @@ def context_slakh_4stems(
                 "end_chunk_in_seconds": end_sample / 44100,
             }
         )
+        
+    with open(output_dir / "chunk_data.json", "w") as f:
+        json.dump(chunk_data, f)
     
     for n in range(num_separations):
         separate_dataset(
@@ -512,17 +521,14 @@ def context_slakh_4stems(
             num_steps=num_steps,
             hint_fixed_sources_idx=hint_fixed_sources_idx,
             batch_size=batch_size,
-            num_gibbs_steps=num_gibbs_steps
+            num_gibbs_steps=num_gibbs_steps,
+            resume=resume
         )
-
-    with open(output_dir / "chunk_data.json", "w") as f:
-        json.dump(chunk_data, f)
 
 
 if __name__ == "__main__":
     # source_id = -1 changes the source at each separation step
     # nota, se trova gia output_dir non la sovrascrive, devi cancellarla a mano (ed è giusto così ahaha)
     # Se num_samples = -1 separa tutto il dataset
-    context_slakh_4stems(output_dir="separations/debug", num_samples=3, num_steps=150, batch_size=16, 
-                         source_id=0, gradient_mean=False, num_resamples=1, s_churn=20., 
-                         num_separations=2, num_gibbs_steps=1, hint_fixed_sources_idx=[])
+    #resume serve a far ripartire la separazione da dove si è interrotta, se si è interrotta per sbaglio
+    context_slakh_4stems(output_dir="separations/context_slakh_full_steps=100_res=1_source_id=0", num_samples=-1, num_steps=100, batch_size=128, source_id=0, gradient_mean=False, num_resamples=1, s_churn=20., num_separations=1, num_gibbs_steps=1, hint_fixed_sources_idx=[], resume=False)

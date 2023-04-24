@@ -7,7 +7,7 @@ import torch
 import torchaudio
 import tqdm
 from torch import Tensor
-from math import sqrt
+from math import sqrt, ceil
 
 from audio_diffusion_pytorch.diffusion import Schedule
 from torch.utils.data import DataLoader
@@ -53,7 +53,7 @@ class ContextualSeparator(Separator):
         mask: torch.Tensor,
         num_steps:int = 100,
         ):
-        print(f"{self.separation_kwargs=}")
+        # print(f"{self.separation_kwargs=}")
         
         device = self.model.device
         mixture = mixture.to(device)
@@ -335,22 +335,25 @@ def separate_dataset(
         raise ValueError(f"Path {save_path} already exists!")
 
     # get samples
-    loader = DataLoader(dataset, batch_size=batch_size, num_workers=16, shuffle=False)
+    loader = DataLoader(dataset, batch_size=batch_size, num_workers=4, shuffle=False)
 
     # main loop
     save_path.mkdir(exist_ok=True, parents=True)
     chunk_id = 0
-    for batch_idx, batch in enumerate(tqdm.tqdm(loader)):
-        # chunk_path = save_path / f"{batch_idx}"
-        # if chunk_path.exists():
-        #     print(f"Skipping path: {chunk_path}")
-        #     continue
+    for batch_idx, batch in enumerate(loader):
+        last_chunk_batch_id = chunk_id + batch[0].shape[0] - 1
+        chunk_path = save_path / f"{last_chunk_batch_id}"
+        if chunk_path.exists():
+            print(f"Skipping path: {chunk_path}")
+            chunk_id = chunk_id + batch[0].shape[0]
+            continue
 
         # load audio tracks
+        print(f"{chunk_id=}")
         tracks = []
         for b in batch:
             tracks.append(b.to("cuda:0"))
-        print(f"batch {batch_idx+1} out of {len(dataset)}")
+        print(f"batch {batch_idx+1} out of {ceil(len(dataset) / batch[0].shape[0])}")
         
         # generate mixture
         mixture = sum(tracks)
@@ -358,7 +361,7 @@ def separate_dataset(
         if hint_fixed_sources_idx is not None :
             sources_idx=torch.arange(4, device=mixture.device)
             seps = tracks_tensor
-            for i in tqdm.tqdm(range(num_gibbs_steps)):
+            for i in range(num_gibbs_steps):
                 p = schedule_prob(i, num_gibbs_steps)
                 mask = torch.bernoulli(torch.ones(4, device=mixture.device) * p).bool()
                 if len(hint_fixed_sources_idx) > 0:
@@ -381,7 +384,7 @@ def separate_dataset(
         num_samples = tracks[0].shape[0]
         for i in range(num_samples):
             chunk_path = save_path / f"{chunk_id}"
-            chunk_path.mkdir(parents=True)
+            chunk_path.mkdir(parents=True, exist_ok=True)
             save_separation(
                 separated_tracks=[sep[i].unsqueeze(0) for sep in seps_dict.values()],
                 original_tracks=[track[i].unsqueeze(0) for track in tracks],

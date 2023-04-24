@@ -250,10 +250,10 @@ def evaluate_tracks_chunks_simplified(separation_path: Union[str, Path],
 
     separation_folder = Path(separation_path)
     assert separation_folder.exists(), separation_folder
-    assert (separation_folder / "chunk_data.json").exists(), separation_folder
-    # assert (separation_folder.parent / "chunk_data.json").exists(), separation_folder
+    #assert (separation_folder / "chunk_data.json").exists(), separation_folder
+    assert (separation_folder.parent / "chunk_data.json").exists(), separation_folder
 
-    with open(separation_folder / "chunk_data.json") as f:
+    with open(separation_folder.parent / "chunk_data.json") as f:
         chunk_data = json.load(f)
         
     def load_model(path):
@@ -276,8 +276,7 @@ def evaluate_tracks_chunks_simplified(separation_path: Union[str, Path],
     # reorder chunks into ascending order and compute sdr
     results = defaultdict(list)
     # for every iteration, chunks contains the list of chunks associated to a track 
-    count = 0
-    for chunk_folder in tqdm(separation_path.iterdir()):
+    for chunk_folder in tqdm(list(separation_path.iterdir())):
                         
         try:
             original_tracks, separated_tracks, sr = load_chunks(chunk_folder)   
@@ -313,8 +312,7 @@ def evaluate_tracks_chunks_simplified(separation_path: Union[str, Path],
                     if is_silent(o) and filter_single_source:
                         num_silent_signals += 1
                 
-                if num_silent_signals > 3:
-                    count += 1
+                if num_silent_signals > 2:
                     continue
                 else:
                     for k in separated_tracks:
@@ -322,7 +320,11 @@ def evaluate_tracks_chunks_simplified(separation_path: Union[str, Path],
                         s = separated_tracks[k][:,start_sample:end_sample]
                         m = mixture[:,start_sample:end_sample]
                         results[k].append((sisnr(s, o, eps) - sisnr(m, o, eps)).item())
+                    results["chunk_n"].append(chunk_folder.name)
+                    results["start_sample"].append(start_sample)
+                    results["end_sample"].append(end_sample)
         except:
+            print("Orrore!")
             continue
     return pd.DataFrame(results)
 
