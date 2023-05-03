@@ -3,6 +3,7 @@ import itertools
 from abc import ABC
 import functools
 import math
+import multiprocessing as mp
 import warnings
 from pathlib import Path
 import os
@@ -272,16 +273,16 @@ class ChunkedSupervisedDataset(SupervisedDataset):
     ):
         super().__init__(audio_dir=audio_dir, stems=stems, sample_rate=sample_rate)
 
-        self.max_chunk_size = max_chunk_size
+        self.max_chunk_size ,self.min_chunk_size= max_chunk_size, min_chunk_size
         self.available_chunk = {}
         self.index_to_track, self.index_to_chunk = [], []
 
-        for track in self.tracks:
-            tracks = self.get_tracks(track) # (num_stems, [1, num_samples])
-            available_chunks = get_nonsilent_and_multi_instr_chunks(tracks, max_chunk_size, min_chunk_size)
-            self.available_chunk[track] = available_chunks
-            self.index_to_track.extend([track] * len(available_chunks))
-            self.index_to_chunk.extend(available_chunks)
+    
+        with mp.Pool() as pool:
+            for track, available_chunks in pool.imap(self._get_non_silent_chunks, self.tracks):
+                self.available_chunk[track] = available_chunks
+                self.index_to_track.extend([track] * len(available_chunks))
+                self.index_to_chunk.extend(available_chunks)
 
         assert len(self.index_to_chunk) == len(self.index_to_track)
 
@@ -300,6 +301,10 @@ class ChunkedSupervisedDataset(SupervisedDataset):
         tracks = self.get_tracks(self.get_chunk_track(item))
         tracks = tuple([t[:, chunk_start:chunk_stop] for t in tracks])
         return tracks
+    
+    def _get_non_silent_chunks(self, track: str):
+        tracks = self.get_tracks(track) # (num_stems, [1, num_samples])
+        return track, get_nonsilent_and_multi_instr_chunks(tracks, self.max_chunk_size, self.min_chunk_size)
     
 class ChunkedSeparationSubset(ChunkedSupervisedDataset):    
     def __init__(self, dataset: SeparationDataset, indices: List[int]):
