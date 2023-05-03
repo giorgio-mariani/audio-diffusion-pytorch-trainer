@@ -1,10 +1,11 @@
 from collections import defaultdict
+import itertools
 import json
 import os
 from pathlib import Path
 from pathlib import Path
 import re
-from typing import List, Mapping, Optional, Tuple, Union
+from typing import Callable, List, Mapping, Optional, Tuple, Union
 import main.module_base
 from script.misc import hparams
 import math
@@ -109,7 +110,15 @@ def evaluate_chunks(separation_path: Union[str, Path], filter_silence: bool = Tr
     return df.to_dict()
 
 
-def evaluate_tracks(separation_path: Union[str, Path], orig_sr: int = 44100, resample_sr: Optional[int] = None):
+def evaluate_tracks(
+    separation_path: Union[str, Path], 
+    orig_sr: int = 44100, 
+    resample_sr: Optional[int] = None,
+    metrics_fns: Mapping[str, Callable] = None,
+    ):
+    
+    metrics_fns = {"SDR": sdr} if metrics_fns is None else metrics_fns
+    
     separation_folder = Path(separation_path)
     assert separation_folder.exists(), separation_folder
     assert (separation_folder.parent / "chunk_data.json").exists(), separation_folder
@@ -129,7 +138,7 @@ def evaluate_tracks(separation_path: Union[str, Path], orig_sr: int = 44100, res
         track_to_chunks[track].append( (start_sample, chunk_idx) )
 
     # reorder chunks into ascending order and compute sdr
-    track_to_sdr = {}
+    track_to_metrics = {}
     for track, chunks in tqdm(track_to_chunks.items()):
         sorted_chunks = sorted(chunks)
 
@@ -149,11 +158,9 @@ def evaluate_tracks(separation_path: Union[str, Path], orig_sr: int = 44100, res
             separated_wavs[k] = resample_fn(torch.cat(separated_wavs[k], dim=-1))
             original_wavs[k] = resample_fn(torch.cat(original_wavs[k], dim=-1))
 
-        mixture = sum([owav for owav in original_wavs.values()])
-
-        #track_to_sdr[track] = {f"SDR_{k}": sdr(separated_wavs[k], original_wavs[k]).item() for k in separated_wavs}
-        track_to_sdr[track] = {f"SISNRi_{k}": (sisnr(separated_wavs[k],  original_wavs[k]) - sisnr(mixture, original_wavs[k])).item() for k in separated_wavs}
-    return pd.DataFrame.from_records(track_to_sdr).transpose()
+        sep_per_metric = itertools.product(separated_wavs, metrics_fns.items())
+        track_to_metrics[track] = {f"{n}_{k}": fn(separated_wavs[k], original_wavs[k]) for k, (n, fn) in sep_per_metric}
+    return pd.DataFrame.from_records(track_to_metrics).transpose()
 
 
 def evaluate_tracks_chunks(separation_path: Union[str, Path], chunk_prop: int, 
@@ -374,3 +381,9 @@ if __name__ == "__main__":
                                                 orig_sr=22050, eps=1e-8,
                                                 compute_likelihood=False)
     print("bau")
+    '''
+    results = evaluate_tracks(
+        Path("separations/context_musdb_full_steps=150_res=2_source_id=-1/sep_round_0"),
+        orig_sr=16000,
+    )
+    print(results.mean())'''
