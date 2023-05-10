@@ -169,7 +169,7 @@ def main(output_dir: Union[str, Path], use_musdb: bool = True):
 
     if not use_musdb:
         dataset = load_slakh_for_eval("/home/giorgio_mariani/audio-diffusion-pytorch-trainer/data/Slakh/test", num_chunks=30)
-        irene_ckpt_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts/")
+        irene_ckpt_path = Path("/home/giorgio_mariani/Documents/audio-diffusion-pytorch-trainer/logs/ckpts/")
         dataset_name = "Slakh"
 
         model_bass = load_model(ROOT_PATH / "logs/ckpts/logical-butterfly-181_epoch=11447_loss=0.005.ckpt", device)
@@ -184,7 +184,7 @@ def main(output_dir: Union[str, Path], use_musdb: bool = True):
             }
 
     else:
-        dataset = load_musdb_for_eval("/home/irene/Documents/audio-diffusion-pytorch-trainer/data/MusDB/test", num_chunks=30)
+        dataset = load_musdb_for_eval("/home/giorgio_mariani/Documents/audio-diffusion-pytorch-trainer/data/MusDB/test", num_chunks=30)
         dataset_name = "MusDB"
         ckpts_path = ROOT_PATH / "data"
         model_bass = load_model(ckpts_path / "rustful-dust-117_epoch=19999-loss=0.026.ckpt", device)
@@ -293,14 +293,20 @@ def context_slakh_4stems(
         num_separations: int = 1,
         num_gibbs_steps: int = 1,
         hint_fixed_sources_idx: List[int] = [],
-        resume = False
+        use_heun=False,
+        resume = False,
+        sigma_min=1e-4,
+        gibbs_sources=None
+    
     ):
     output_dir = Path(output_dir)
     device = torch.device("cuda:0")
-    sigma_min, sigma_max = 1e-4, 1.0
-
+    sigma_min, sigma_max = sigma_min, 1.0
+    
+    assert gibbs_sources is None or len(gibbs_sources)==(num_gibbs_steps-1), "len(gibbs_sources) è diverso da num_gibbs_steps-1"
+    
     dataset = ChunkedSupervisedDataset(
-        audio_dir="/home/irene/Documents/audio-diffusion-pytorch-trainer/data/Slakh_track_first/test",
+        audio_dir="/home/giorgio_mariani/Documents/audio-diffusion-pytorch-trainer/data/Slakh_track_first/test",
         stems=["bass", "drums", "guitar", "piano"],
         sample_rate=44100,
         max_chunk_size=262144 * 2,
@@ -317,7 +323,7 @@ def context_slakh_4stems(
         
     dataset = ChunkedSeparationSubset(dataset, indices=indices)
     resampled_dataset = ResampleDataset(dataset=dataset, new_sample_rate=22050)
-    ckpts_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
+    ckpts_path = Path("/home/giorgio_mariani/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
     model_cpu = load_context(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt", "cpu", 4)
     model = model_cpu.to(device)
     del model_cpu
@@ -331,6 +337,7 @@ def context_slakh_4stems(
         num_resamples=num_resamples,
         source_id=source_id,
         gradient_mean=gradient_mean,
+        use_heun=use_heun
     )
 
     chunk_data = []
@@ -347,10 +354,14 @@ def context_slakh_4stems(
                 "track": dataset.get_chunk_track(indices[i]),
                 "start_chunk_sample": start_sample,
                 "end_chunk_sample": end_sample,
-                "start_chunk_seconds": start_sample / 44100,
-                "end_chunk_in_seconds": end_sample / 44100,
+                "start_chunk_seconds": start_sample / 22050,
+                "end_chunk_in_seconds": end_sample / 22050,
             }
         )
+        
+    
+    if not resume:
+        output_dir.mkdir(parents=True)
         
     with open(output_dir / "chunk_data.json", "w") as f:
         json.dump(chunk_data, f)
@@ -364,7 +375,8 @@ def context_slakh_4stems(
             hint_fixed_sources_idx=hint_fixed_sources_idx,
             batch_size=batch_size,
             num_gibbs_steps=num_gibbs_steps,
-            resume=resume
+            resume=resume,
+            gibbs_sources=gibbs_sources
         )
 
 
@@ -474,5 +486,20 @@ if __name__ == "__main__":
     # source_id = -1 changes the source at each separation step
     # nota, se trova gia output_dir non la sovrascrive, devi cancellarla a mano (ed è giusto così ahaha)
     # Se num_samples = -1 separa tutto il dataset
-    #resume serve a far ripartire la separazione da dove si è interrotta, se si è interrotta per sbaglio
-    context_slakh_4stems(output_dir="separations/context_slakh_full_steps=100_res=1_source_id=0", num_samples=-1, num_steps=100, batch_size=128, source_id=0, gradient_mean=False, num_resamples=1, s_churn=20., num_separations=1, num_gibbs_steps=1, hint_fixed_sources_idx=[], resume=False)
+    # resume serve a far ripartire la separazione da dove si è interrotta, se si è interrotta per sbaglio
+    num_steps=150
+    source_id=0 
+    num_resamples=1
+    num_separations=1
+    num_gibbs_steps=10
+    hint_fixed_sources_idx=[]
+    use_heun=False
+    sigma_min = 1e-4
+    gibbs_sources=None
+    s_churn=20.
+
+    context_slakh_4stems(output_dir=f"separations/context_slakh_last_{num_steps=}_{source_id=}_{num_resamples=}_{num_separations=}_{num_gibbs_steps=}_{hint_fixed_sources_idx=}_{use_heun=}_{gibbs_sources=}_{s_churn=}", 
+                         num_samples=-1, num_steps=num_steps, batch_size=128, source_id=source_id, 
+                         gradient_mean=False, num_resamples=num_resamples, 
+                         s_churn=s_churn, num_separations=num_separations, num_gibbs_steps=num_gibbs_steps, gibbs_sources=gibbs_sources,
+                         hint_fixed_sources_idx=hint_fixed_sources_idx, resume=False, use_heun=use_heun, sigma_min= sigma_min)

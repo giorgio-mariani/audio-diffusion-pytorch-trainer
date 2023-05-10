@@ -11,6 +11,7 @@ from math import sqrt, ceil
 
 from audio_diffusion_pytorch.diffusion import Schedule
 from torch.utils.data import DataLoader
+from evaluation.evaluate_separation import evaluate_tracks_chunks_simplified_gibbs
 
 from main.dataset import assert_is_audio, SeparationDataset
 from main.module_base import Model
@@ -165,7 +166,7 @@ def step(
         d_prime = (d + d_2) / 2
         x = x + d_prime * (sigma_next - sigma_hat)
     if not gradient_mean:
-        x[:, [source_id], :] = mixture - (x.sum(dim=1, keepdim=True) - x[:, [source_id], :])
+        x[:, [source_id], :] = mixture - (x.sum(dim=1, keepdim=True) - x[:, [source_id], :]) #+ torch.randn_like(x[:, [source_id], :]) * sigmas[i+1]
     return x
 
 @torch.no_grad()
@@ -318,6 +319,7 @@ def separate_dataset(
     hint_fixed_sources_idx = None,
     batch_size: int = 16, 
     num_gibbs_steps: int = 1,
+    gibbs_sources = None
 ):
     def schedule_prob(t, T, alpha=0.95):
         p_max = (T - 1) / T
@@ -335,7 +337,7 @@ def separate_dataset(
         raise ValueError(f"Path {save_path} already exists!")
 
     # get samples
-    loader = DataLoader(dataset, batch_size=batch_size, num_workers=4, shuffle=False)
+    loader = DataLoader(dataset, batch_size=batch_size, num_workers=6, shuffle=False)
 
     # main loop
     save_path.mkdir(exist_ok=True, parents=True)
@@ -356,15 +358,22 @@ def separate_dataset(
         print(f"batch {batch_idx+1} out of {ceil(len(dataset) / batch[0].shape[0])}")
         
         # generate mixture
-        mixture = sum(tracks)
-        tracks_tensor = torch.cat(tracks, dim=1)
+        mixture = sum(tracks) 
+        tracks_tensor = torch.cat(tracks, dim=1) #tracks_tensor p il ground truth 
         if hint_fixed_sources_idx is not None :
             sources_idx=torch.arange(4, device=mixture.device)
-            seps = tracks_tensor
+            seps = tracks_tensor.clone().detach()           
             for i in range(num_gibbs_steps):
-                p = schedule_prob(i, num_gibbs_steps)
-                mask = torch.bernoulli(torch.ones(4, device=mixture.device) * p).bool()
+                if gibbs_sources is None:
+                    p = schedule_prob(i, num_gibbs_steps)
+                    mask = torch.bernoulli(torch.ones(4, device=mixture.device) * p).bool() #se mask=1 allora quella sorgente è fissata come "ground truth"
+                elif i==0:
+                    mask = torch.tensor([False]*4)                
+                else:
+                    mask = torch.tensor([True if j in gibbs_sources[i-1] else False for j in range(4)]) 
+                        
                 if len(hint_fixed_sources_idx) > 0:
+                   #nella variabile seps ci sono le sorgenti fissate 
                     seps[:, hint_fixed_sources_idx, :] = tracks_tensor[:, hint_fixed_sources_idx, :]
                 inpaint, inpaint_mask = generate_mask_and_sources(
                     sources=seps,
@@ -376,10 +385,25 @@ def separate_dataset(
                     source_with_hint=inpaint,
                     mask=inpaint_mask
                 )
-                seps = torch.cat([seps_dict["bass"], seps_dict["drums"], seps_dict["guitar"], seps_dict["piano"]], dim=1)
+                seps = torch.cat([seps_dict["bass"], seps_dict["drums"], seps_dict["guitar"], seps_dict["piano"]], dim=1) #seps sono le separaioni aggiornate
+                num_samples = tracks[0].shape[0]
+                chunk_id_tmp = chunk_id
+                for j in range(num_samples):
+                    chunk_path = save_path / f"{chunk_id_tmp}" / f"gibbs_{i}"
+                    chunk_path.mkdir(parents=True, exist_ok=True)
+                    save_separation(
+                        separated_tracks=[sep[j].unsqueeze(0) for sep in seps_dict.values()],
+                        original_tracks=[track[j].unsqueeze(0) for track in tracks],
+                        sample_rate=dataset.sample_rate,
+                        chunk_path=chunk_path,
+                        save_metrics_only=True,
+                        gibbs_step=i,
+                        gibbs_fix_sources=sources_idx[mask].tolist()
+                    )
+                    chunk_id_tmp += 1
         else:
             seps_dict = separator.separate(mixture=mixture, num_steps=num_steps)
-
+    
         # save separated audio
         num_samples = tracks[0].shape[0]
         for i in range(num_samples):
@@ -400,6 +424,9 @@ def save_separation(
     original_tracks: List[torch.Tensor],
     sample_rate: int,
     chunk_path: Path,
+    save_metrics_only: bool = False,
+    gibbs_step: int = None,
+    gibbs_fix_sources: List = None
 ):
     separated_tracks_tensor = torch.cat(separated_tracks, dim=1)
     original_tracks_tensor = torch.cat(original_tracks, dim=1)
@@ -410,10 +437,16 @@ def save_separation(
         assert_is_audio(*original_track, *separated_track)
         # assert original_1.shape == original_2.shape == separation_1.shape == separation_2.shape
         assert len(original_tracks) == len(separated_tracks)
-        for i, (ori, sep) in enumerate(zip(original_track, separated_track)):
-            torchaudio.save(chunk_path / f"ori{i+1}.wav", ori.cpu(), sample_rate=sample_rate)
-            torchaudio.save(chunk_path / f"sep{i+1}.wav", sep.cpu(), sample_rate=sample_rate)
-
+        if save_metrics_only:
+            df = evaluate_tracks_chunks_simplified_gibbs(
+                separated_tracks_tensor, original_tracks_tensor, gibbs_step=gibbs_step)
+            df["gibbs_step"] = gibbs_step
+            df["gibbs_fix_sources"] = str(gibbs_fix_sources)
+            df.to_csv(chunk_path / "metrics.csv")
+        else:
+            for i, (ori, sep) in enumerate(zip(original_track, separated_track)):
+                torchaudio.save(chunk_path / f"ori{i+1}.wav", ori.cpu(), sample_rate=sample_rate)
+                torchaudio.save(chunk_path / f"sep{i+1}.wav", sep.cpu(), sample_rate=sample_rate)
 
 def enforce_mixture_consistency(
         mixture_waveforms,
