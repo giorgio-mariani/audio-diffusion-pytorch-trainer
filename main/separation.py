@@ -178,6 +178,7 @@ def inpaint_mixture(
     sigmas: Tensor,
     noises: Tensor,
     num_resamples: int = 1,
+    source_id: int = 0,
     **kwargs
 ) -> Tensor:
         
@@ -190,7 +191,9 @@ def inpaint_mixture(
         for r in range(num_resamples):
             # Merge noisy source and current then denoise
             x = source_noisy * mask + x * mask.logical_not()
-            x = step(x, i, mixture=mixture, denoise_fn=fn, sigmas=sigmas, **kwargs)  # type: ignore # noqa
+            if source_id == -2:
+                source_id = r
+            x = step(x, i, mixture=mixture, denoise_fn=fn, sigmas=sigmas, source_id=source_id, **kwargs)  # type: ignore # noqa
             # Renoise if not last resample step
             if r < num_resamples - 1:
                 sigma = sqrt(sigmas[i] ** 2 - sigmas[i + 1] ** 2)

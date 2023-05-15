@@ -181,7 +181,9 @@ def evaluate_tracks_chunks(separation_path: Union[str, Path], chunk_prop: int,
         return model
     
     ckpts_path = Path("/home/giorgio_mariani/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
-    model = load_model(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt")
+    #model = load_model(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt")
+    model = load_model(ckpts_path / "epoch=729-valid_loss=0.014.ckpt")
+    
     denoise_fn = model.model.diffusion.denoise_fn
 
     resample_fn = Resample(orig_freq=orig_sr, new_freq=resample_sr) if resample_sr is not None else lambda x: x
@@ -273,7 +275,8 @@ def evaluate_tracks_chunks_simplified(separation_path: Union[str, Path],
     
     if compute_likelihood:
         ckpts_path = Path("/home/giorgio_mariani/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
-        model = load_model(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt")
+        #model = load_model(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt")
+        model = load_model(ckpts_path / "epoch=729-valid_loss=0.014.ckpt")
         denoise_fn = model.model.diffusion.denoise_fn
     
     track_to_chunks = defaultdict(list)

@@ -296,14 +296,15 @@ def context_slakh_4stems(
         use_heun=False,
         resume = False,
         sigma_min=1e-4,
+        sigma_max=1.0,
         gibbs_sources=None
     
     ):
     output_dir = Path(output_dir)
     device = torch.device("cuda:0")
-    sigma_min, sigma_max = sigma_min, 1.0
+    sigma_min, sigma_max = sigma_min, sigma_max
     
-    assert gibbs_sources is None or len(gibbs_sources)==(num_gibbs_steps-1), "len(gibbs_sources) è diverso da num_gibbs_steps-1"
+    assert gibbs_sources is None or len(gibbs_sources)==num_gibbs_steps-1, f"{gibbs_sources=}, {num_gibbs_steps-1=}"
     
     dataset = ChunkedSupervisedDataset(
         audio_dir="/home/giorgio_mariani/Documents/audio-diffusion-pytorch-trainer/data/Slakh_track_first/test",
@@ -323,8 +324,11 @@ def context_slakh_4stems(
         
     dataset = ChunkedSeparationSubset(dataset, indices=indices)
     resampled_dataset = ResampleDataset(dataset=dataset, new_sample_rate=22050)
+    path= "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt"
+    #path = Path("epoch=729-valid_loss=0.014.ckpt")
     ckpts_path = Path("/home/giorgio_mariani/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
-    model_cpu = load_context(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt", "cpu", 4)
+    model_cpu = load_context(ckpts_path /  path, "cpu", 4)
+    print("LA PATH DEL MODELLO é", path)
     model = model_cpu.to(device)
     del model_cpu
 
@@ -491,15 +495,18 @@ if __name__ == "__main__":
     source_id=0 
     num_resamples=1
     num_separations=1
-    num_gibbs_steps=10
+    num_gibbs_steps=1
     hint_fixed_sources_idx=[]
     use_heun=False
     sigma_min = 1e-4
+    sigma_max = 1
     gibbs_sources=None
     s_churn=20.
+    #output_dir = "separations/debug"
+    output_dir = f"separations/context_slakh_sampler_{num_steps=}_{source_id=}_{num_resamples=}_{num_separations=}_{num_gibbs_steps=}_{hint_fixed_sources_idx=}_{use_heun=}_{gibbs_sources=}_{s_churn=}_{sigma_min=}_{sigma_max=}"
 
-    context_slakh_4stems(output_dir=f"separations/context_slakh_last_{num_steps=}_{source_id=}_{num_resamples=}_{num_separations=}_{num_gibbs_steps=}_{hint_fixed_sources_idx=}_{use_heun=}_{gibbs_sources=}_{s_churn=}", 
+    context_slakh_4stems(output_dir=output_dir, 
                          num_samples=-1, num_steps=num_steps, batch_size=128, source_id=source_id, 
                          gradient_mean=False, num_resamples=num_resamples, 
                          s_churn=s_churn, num_separations=num_separations, num_gibbs_steps=num_gibbs_steps, gibbs_sources=gibbs_sources,
-                         hint_fixed_sources_idx=hint_fixed_sources_idx, resume=False, use_heun=use_heun, sigma_min= sigma_min)
+                         hint_fixed_sources_idx=hint_fixed_sources_idx, resume=False, use_heun=use_heun, sigma_min= sigma_min, sigma_max=sigma_max)
