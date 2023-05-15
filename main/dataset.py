@@ -278,11 +278,12 @@ class ChunkedSupervisedDataset(SupervisedDataset):
         self.index_to_track, self.index_to_chunk = [], []
 
     
-        with mp.Pool() as pool:
-            for track, available_chunks in pool.imap(self._get_non_silent_chunks, self.tracks):
-                self.available_chunk[track] = available_chunks
-                self.index_to_track.extend([track] * len(available_chunks))
-                self.index_to_chunk.extend(available_chunks)
+        #with mp.Pool() as pool:
+        for track in self.tracks:
+            _, available_chunks = self._get_non_silent_chunks(track)
+            self.available_chunk[track] = available_chunks
+            self.index_to_track.extend([track] * len(available_chunks))
+            self.index_to_chunk.extend(available_chunks)
 
         assert len(self.index_to_chunk) == len(self.index_to_track)
 
