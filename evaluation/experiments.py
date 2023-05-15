@@ -230,6 +230,67 @@ def weakly_slakh_4stems(
         yaml.dump(config, f)
 
 @torch.no_grad()
+def context_slakh_4stems_v2(
+    dataset_path: str,
+    model_path: str,
+    output_dir: str,
+    num_samples: int = None,
+    num_resamples: int = 1,
+    num_steps: int = 150,
+    batch_size: int = 16,
+    resume: bool = True,
+    device: float = torch.device("cuda:0"),
+    s_churn: float = 20.0,
+    source_id: int = -1,
+    sigma_min: float = 1e-4,
+    sigma_max: float = 1.0,
+    use_gaussian: bool = False,
+    gamma: float = 1.0,
+    ):
+    config = copy(locals())
+    output_dir = Path(output_dir)
+
+    dataset = ChunkedSupervisedDataset(
+        audio_dir=dataset_path,
+        stems=["bass", "drums", "guitar", "piano"],
+        sample_rate=44100,
+        max_chunk_size=262144 * 2,
+        min_chunk_size=262144 * 2,
+    )
+
+    model = load_model(model_path, device)
+
+    if use_gaussian:
+        diff_fn = lambda x, sigma, denoise_fn, mixture, source_id: differential_with_gaussian(x, sigma, denoise_fn, mixture, lambda s:gamma*s)
+    else:
+        diff_fn = differential_with_dirac
+    
+    separator = ContextualSeparator(
+        model=model,
+        stems=["bass", "drums", "guitar", "piano"],
+        sigma_schedule=KarrasSchedule(sigma_min=sigma_min, sigma_max=sigma_max, rho=7.0),
+        differential_fn=diff_fn,
+        s_churn=s_churn,
+        num_resamples=num_resamples,
+        source_id=source_id,
+    )
+
+    context_4stems(
+        output_dir=output_dir,
+        dataset=dataset,
+        separator=separator,
+        sample_rate=22050,
+        num_samples=num_samples,
+        num_steps=num_steps,
+        batch_size=batch_size,
+        resume=resume,
+    )
+    
+    with open(output_dir/"config.yaml", "w") as f:
+        yaml.dump(config, f)
+
+
+@torch.no_grad()
 def context_slakh_4stems(
         output_dir: Union[str, Path],
         num_samples: int = -1,
