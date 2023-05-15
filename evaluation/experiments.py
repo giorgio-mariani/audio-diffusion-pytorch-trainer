@@ -1,8 +1,11 @@
+from copy import copy
 import itertools
 import json
 import math
 import functools
 from typing import List, Callable, Mapping, Optional, Sequence, Tuple, Union
+import hydra
+from omegaconf import DictConfig
 
 import torch
 import tqdm
@@ -161,75 +164,11 @@ def separator_factory(separator, **kwargs):
         differential_fn=differential_fn,
         **kwargs,
     )
-    
-@torch.no_grad()
-def main(output_dir: Union[str, Path], use_musdb: bool = True):
-    output_dir = Path(output_dir)
-    device = torch.device("cuda:0")
-
-    if not use_musdb:
-        dataset = load_slakh_for_eval("/home/giorgio_mariani/audio-diffusion-pytorch-trainer/data/Slakh/test", num_chunks=30)
-        irene_ckpt_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts/")
-        dataset_name = "Slakh"
-
-        model_bass = load_model(ROOT_PATH / "logs/ckpts/logical-butterfly-181_epoch=11447_loss=0.005.ckpt", device)
-        model_guitar = load_model(ROOT_PATH / "logs/ckpts/radiant-wind-181_epoch=4666_loss=0.014.ckpt", device)
-        model_drums = load_model(irene_ckpt_path / "drums_slack.ckpt", device)
-        model_piano = load_model(irene_ckpt_path / "piano_slack.ckpt", device)
-        stem_to_model={
-                "bass": model_bass, 
-                "drums": model_drums, 
-                "guitar": model_guitar, 
-                "piano": model_piano,
-            }
-
-    else:
-        dataset = load_musdb_for_eval("/home/irene/Documents/audio-diffusion-pytorch-trainer/data/MusDB/test", num_chunks=30)
-        dataset_name = "MusDB"
-        ckpts_path = ROOT_PATH / "data"
-        model_bass = load_model(ckpts_path / "rustful-dust-117_epoch=19999-loss=0.026.ckpt", device)
-        model_vocals = load_model(ckpts_path / "royal-breeze-162_epoch=29142_loss=0.138.ckpt", device)
-        model_drums = load_model(ckpts_path / "usual-frost-113_epoch=10571-loss=0.200.ckpt", device)
-        model_other = load_model(ckpts_path / "copper-wood-169_epoch=28571-valid_loss=0.206.ckpt", device)
-        stem_to_model={
-                "bass": model_bass, 
-                "drums": model_drums, 
-                "other": model_other, 
-                "vocals": model_vocals,
-            }
-    
-    hparams = {
-        "sigma_min": [1e-4],
-        "sigma_max": [20.0],
-        "rho": [7],
-        "s_churn": [40.0],
-        "num_steps": [150],
-        "use_heun": [False],
-    }
-    
-    sep_factory = functools.partial(
-        separator_factory,
-        separator=functools.partial(IndependentSeparator, stem_to_model)
-    )
-    
-    hparams_search(
-        dataset, 
-        sep_factory, 
-        hparams={"likelihood": ["dirac"], "source_id": [0,1,2,3],**hparams}, 
-        save_path=output_dir / f"weak_{dataset_name}_dirac_22050_source",
-    )
-
-    hparams_search(
-        dataset, 
-        sep_factory, 
-        hparams={"likelihood": ["gaussian"], "gamma_coeff": [0.25, 0.5, 0.75, 1.0], **hparams}, 
-        save_path=output_dir / f"weak_{dataset_name}_gaussian_22050_gamma",
-    )
 
 
 @torch.no_grad()
 def weakly_slakh_4stems(
-    output_dir: Union[str, Path],
+    output_dir: str,
     num_samples: int = None,
     num_resamples: int = 1,
     num_steps: int = 150,
@@ -238,7 +177,10 @@ def weakly_slakh_4stems(
     device: float = torch.device("cuda:0"),
     s_churn: float = 20.0,
     source_id: int = -1,
+    use_gaussian: bool = False,
+    gamma: float = 1.0,
     ):
+    config = copy(locals())
     output_dir = Path(output_dir)
 
     dataset = ChunkedSupervisedDataset(
@@ -254,6 +196,11 @@ def weakly_slakh_4stems(
     model_drums = load_model(ROOT_PATH / "ckpts/ancient-voice-289-(SLAKH_DRUMS_v2)-epoch=258.ckpt", device)
     model_piano = load_model(ROOT_PATH / "ckpts/ruby-dew-290-(SLAKH_PIANO_v2)-epoch=236.ckpt", device)
 
+    if use_gaussian:
+        diff_fn = lambda x, sigma, denoise_fn, mixture, source_id: differential_with_gaussian(x, sigma, denoise_fn, mixture, lambda s:gamma*s)
+    else:
+        diff_fn = differential_with_dirac
+        
     separator = IndependentSeparator(
         stem_to_model={
             "bass": model_bass,
@@ -262,9 +209,10 @@ def weakly_slakh_4stems(
             "piano": model_piano,
         },
         sigma_schedule=KarrasSchedule(sigma_min=1e-4, sigma_max=1.0, rho=7.0),
-        differential_fn=functools.partial(differential_with_dirac, source_id=source_id),
+        differential_fn=diff_fn,
         s_churn=s_churn,
         num_resamples=num_resamples,
+        source_id=source_id,
     )
 
     context_4stems(
@@ -277,8 +225,9 @@ def weakly_slakh_4stems(
         batch_size=batch_size,
         resume=resume,
     )
-
-
+    
+    with open(output_dir/"config.yaml", "w") as f:
+        yaml.dump(config, f)
 
 @torch.no_grad()
 def context_slakh_4stems(
@@ -423,20 +372,26 @@ def context_4stems(
 
 
 def context_musdb_4stems(
-    musdb18_path: Path,
-    ckpt_path: Path,
-    output_dir: Path,
+    musdb18_path: str,
+    ckpt_path: str,
+    output_dir: str,
     sample_rate: int,
     device: str = "cuda:0",
     num_samples: Optional[int] = None,
     sigma_min: float = 1e-4,
     sigma_max: float = 1.0,
+    rho: float = 7.0,
     s_churn: float = 20.0,
     source_id: int = -1,
     num_steps: int = 150,
     batch_size: int = 16,
+    num_resample: int = 1,
     resume: bool = False
     ):
+    config = copy(locals())
+
+    ckpt_path = Path(ckpt_path)
+    output_dir = Path(output_dir)
 
     dataset = ChunkedSupervisedDataset(
         audio_dir=musdb18_path,
@@ -449,10 +404,10 @@ def context_musdb_4stems(
     separator = ContextualSeparator(
         model=load_diffusion_model(ckpt_path, yaml.safe_load(ckpt_path.with_suffix(".yaml").read_text()), device),
         stems=["bass", "drums", "guitar", "piano"],
-        sigma_schedule=KarrasSchedule(sigma_min=sigma_min, sigma_max=sigma_max, rho=7.0),
+        sigma_schedule=KarrasSchedule(sigma_min=sigma_min, sigma_max=sigma_max, rho=rho),
         differential_fn=differential_with_dirac,
         s_churn=s_churn,
-        num_resamples=2,
+        num_resamples=num_resample,
         source_id=source_id,
         gradient_mean=False,
     )
@@ -468,6 +423,9 @@ def context_musdb_4stems(
         resume=resume,
         transform_fn=functools.partial(torch.mean, dim=0, keepdims=True)
     )
+    
+    with open(output_dir/"config.yaml", "w") as f:
+        yaml.dump(config, f)
 
 
 if __name__ == "__main__":
