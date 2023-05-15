@@ -159,7 +159,7 @@ def evaluate_tracks(
             original_wavs[k] = resample_fn(torch.cat(original_wavs[k], dim=-1))
 
         sep_per_metric = itertools.product(separated_wavs, metrics_fns.items())
-        track_to_metrics[track] = {f"{n}_{k}": fn(separated_wavs[k], original_wavs[k]) for k, (n, fn) in sep_per_metric}
+        track_to_metrics[track] = {f"{n}_{k}": fn(separated_wavs[k], original_wavs[k]).item() for k, (n, fn) in sep_per_metric}
     return pd.DataFrame.from_records(track_to_metrics).transpose()
 
 
@@ -269,9 +269,10 @@ def evaluate_tracks_chunks_simplified(separation_path: Union[str, Path],
         model.to("cuda:0")
         return model
     
-    ckpts_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
-    model = load_model(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt")
-    denoise_fn = model.model.diffusion.denoise_fn
+    if compute_likelihood:
+        ckpts_path = Path("/home/irene/Documents/audio-diffusion-pytorch-trainer/logs/ckpts")
+        model = load_model(ckpts_path / "avid-darkness-164_epoch=419-valid_loss=0.015.ckpt")
+        denoise_fn = model.model.diffusion.denoise_fn
     
     track_to_chunks = defaultdict(list)
     for chunk_data in chunk_data:
