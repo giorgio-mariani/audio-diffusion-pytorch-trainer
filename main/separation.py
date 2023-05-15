@@ -107,6 +107,47 @@ class IndependentSeparator(Separator):
         )
         return {stem:y[:,i:i+1,:] for i, stem in enumerate(stems)}
 
+    def separate_with_hint(
+        self,
+        mixture: torch.Tensor,
+        source_with_hint: torch.Tensor,
+        mask: torch.Tensor,
+        num_steps:int = 100,
+        ):
+        # print(f"{self.separation_kwargs=}")
+        
+        #device = self.model.device
+        #mixture = mixture.to(device)
+        #batch_size, _, length_samples = mixture.shape
+        
+        stems = self.stem_to_model.keys()
+        models = [self.stem_to_model[s] for s in stems]
+        fns = [m.model.diffusion.denoise_fn for m in models]
+        
+        # get device of models
+        devices = {m.device for m in models}
+        assert len(devices) == 1, devices
+        (device,) = devices
+        
+        def denoise_fn(x, sigma):
+            xs = [x[:, i:i+1] for i in range(4)]
+            xs = [fn(x,sigma=sigma) for fn,x in zip(fns, xs)]
+            return torch.cat(xs, dim=1)
+        
+        mixture = mixture.to(device)
+        batch_size, _, length_samples = mixture.shape
+
+        y = inpaint_mixture(
+            source = source_with_hint,
+            mask = mask,
+            mixture = mixture,
+            fn = denoise_fn,
+            sigmas = self.sigma_schedule(num_steps, device),
+            noises=torch.randn(batch_size, len(stems), length_samples).type_as(source_with_hint),
+            **self.separation_kwargs,
+        )
+
+        return {stem:y[:,i:i+1,:] for i,stem in enumerate(stems)}
 
 def differential_with_dirac(x, sigma, denoise_fn, mixture, source_id=0):
     num_sources = x.shape[1]
@@ -368,7 +409,7 @@ def separate_dataset(
                     seps[:, hint_fixed_sources_idx, :] = tracks_tensor[:, hint_fixed_sources_idx, :]
                 inpaint, inpaint_mask = generate_mask_and_sources(
                     sources=seps,
-                    fixed_sources_idx = sources_idx[mask].tolist() + hint_fixed_sources_idx
+                    fixed_sources_idx = sources_idx[mask].tolist() + list(hint_fixed_sources_idx)
                 )
                 seps_dict = separator.separate_with_hint(
                     mixture=mixture, 
